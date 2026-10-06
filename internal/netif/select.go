@@ -226,3 +226,31 @@ func Menu(in io.Reader, out io.Writer, ifs []Interface, seen map[string][]Sighti
 		}
 	}
 }
+
+// Guess picks the most likely CDJ interface without asking: the saved
+// choice if still present, else the only interface with Pro DJ Link
+// traffic, else the only wired interface. Used when the probe can't run
+// (e.g. rekordbox holds port 50000).
+func Guess(ifs []Interface, seen map[string][]Sighting, saved string) (Interface, error) {
+	if saved != "" {
+		if ifc, err := Find(ifs, saved); err == nil {
+			return ifc, nil
+		}
+	}
+	var traffic, wired []Interface
+	for _, ifc := range ifs {
+		if len(seen[ifc.Name]) > 0 {
+			traffic = append(traffic, ifc)
+		}
+		if !ifc.Wireless {
+			wired = append(wired, ifc)
+		}
+	}
+	if len(traffic) == 1 {
+		return traffic[0], nil
+	}
+	if len(traffic) == 0 && len(wired) == 1 {
+		return wired[0], nil
+	}
+	return Interface{}, errors.New("cannot guess the CDJ interface; pass it explicitly (see `slipmat interfaces`)")
+}

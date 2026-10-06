@@ -66,3 +66,20 @@ func TestListDoesNotFail(t *testing.T) {
 		t.Logf("%s wireless=%v", i, i.Wireless)
 	}
 }
+
+func TestGuess(t *testing.T) {
+	if got, err := Guess(sample, nil, ""); err != nil || got.Name != "en13" {
+		t.Fatalf("sole wired: %v %v", got.Name, err)
+	}
+	if got, err := Guess(sample, nil, "en0"); err != nil || got.Name != "en0" {
+		t.Fatalf("saved: %v %v", got.Name, err)
+	}
+	seen := map[string][]Sighting{"en0": {{Name: "CDJ-3000"}}}
+	if got, err := Guess(sample, seen, ""); err != nil || got.Name != "en0" {
+		t.Fatalf("traffic: %v %v", got.Name, err)
+	}
+	two := append([]Interface{{Name: "en5", Prefix: netip.MustParsePrefix("169.254.1.1/16")}}, sample...)
+	if _, err := Guess(two, nil, ""); err == nil {
+		t.Fatal("expected ambiguity error with two wired interfaces")
+	}
+}

@@ -155,6 +155,7 @@ func (c *common) chooseInterface(ctx context.Context) (netif.Interface, error) {
 func cmdInterfaces(args []string) error {
 	fs := flag.NewFlagSet("interfaces", flag.ContinueOnError)
 	probe := fs.Bool("probe", true, "listen 3 s for Pro DJ Link keep-alives on each interface")
+	guess := fs.Bool("guess", false, "print only the name of the most likely CDJ interface (for scripts)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -171,6 +172,14 @@ func cmdInterfaces(args []string) error {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "probe skipped:", err)
 		}
+	}
+	if *guess {
+		ifc, err := netif.Guess(ifs, seen, netif.LoadConfig().Interface)
+		if err != nil {
+			return err
+		}
+		fmt.Println(ifc.Name)
+		return nil
 	}
 	netif.Table(os.Stdout, ifs, seen)
 	if saved := netif.LoadConfig().Interface; saved != "" {

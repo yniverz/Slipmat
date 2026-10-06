@@ -18,12 +18,21 @@ if [ -z "$iface" ]; then
 		iface=$(sed -n 's/.*"interface": *"\([^"]*\)".*/\1/p' "$cfg")
 	fi
 fi
+root=$(cd "$(dirname "$0")/.." && pwd)
 if [ -z "$iface" ]; then
-	echo "usage: $0 NAME INTERFACE   (no saved interface; run 'slipmat interfaces' to list)" >&2
+	# No saved choice yet: let slipmat guess (only wired interface, or the
+	# one where Pro DJ Link traffic is heard).
+	if [ ! -x "$root/bin/slipmat" ]; then
+		(cd "$root" && go build -o bin/slipmat ./cmd/slipmat)
+	fi
+	iface=$("$root/bin/slipmat" interfaces -guess 2>/dev/null) || true
+fi
+if [ -z "$iface" ]; then
+	echo "usage: $0 NAME INTERFACE   (could not pick one automatically; run 'bin/slipmat interfaces' to list)" >&2
 	exit 2
 fi
 
-dir=$(cd "$(dirname "$0")/.." && pwd)/captures
+dir=$root/captures
 mkdir -p "$dir"
 out="$dir/$name-$(date +%Y%m%d-%H%M%S).pcap"
 echo "capturing on $iface -> $out (Ctrl-C to stop; sudo will ask for your password)"
