@@ -195,6 +195,24 @@ From the rekordbox 7 ↔ 2× CDJ-3000 (fw 3.22) capture [RB7], 2026-10-06:
 - Every rekordbox packet above and the portmap/mount replies are reproduced
   byte for byte by our encoders (`encode_test.go`, `rpc_test.go`).
 
+dbserver, from the same capture:
+
+- Discovery: the player sends `00 00 00 0f "RemoteDBServer\0"` (split 2 + 17
+  bytes) and gets back the 2-byte port of an ephemeral dbserver.
+- **The argument-tag blob is exactly one tag per argument** (not padded to
+  12). Menu items have **16 arguments**: parent, id, len+label1, len+label2,
+  type, flags, artwork, position, three extras, len+label3, extra (BPM × 100
+  in track rows).
+- Setup is answered with type 0x0000 `[own device, client's 2nd arg]`.
+  0x3007 and 0x3100 get an empty success. 0x1400 is the sort popup.
+- Players pipeline requests on one connection and keep one pending menu per
+  menu location (byte 2 of the first argument), so a metadata request
+  (location 2) can be followed by artwork (8) before its render.
+- "Not found" for data is `[request, 0x32, 0, (no blob)]`.
+- The load sequence: 0x2102 track info (path, size, decoder id), 0x2002,
+  0x2b04 cues, 0x2204 beat grid, 0x2c04 PQT2, 0x2504, 0x2d04 PWV6/PWV7 (.2EX),
+  0x2004, 0x2c04 PWV5, 0x2904 and 0x2c04 PSSI, then NFS reads of the path.
+
 From the CDJ-2000NXS captures [DSC]:
 
 - Final-stage claims are 0x26 bytes. A real player's media response uses

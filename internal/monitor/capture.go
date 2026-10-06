@@ -39,6 +39,7 @@ type CaptureDecoder struct {
 	dbPorts map[uint16]bool        // dbserver ports announced via 12523
 	rpcPort map[uint16]string      // extra RPC ports (mount) learned from portmap
 	calls   map[uint32]rpcCallInfo // xid -> call, to label replies
+	streams map[flowKey]*tcpStream
 	start   time.Time
 	expired time.Time
 }
@@ -148,33 +149,27 @@ func flagString(f uint8) string {
 func (d *CaptureDecoder) tcp(log *slog.Logger, p *pcap.Packet) {
 	sp, dp := p.Src.Port(), p.Dst.Port()
 	route := fmt.Sprintf("%s -> %s", p.Src, p.Dst)
-	var what string
 	switch {
-	case dp == PortDBDiscovery:
-		what = "db-discovery request"
-	case sp == PortDBDiscovery:
-		what = "db-discovery reply"
-		if len(p.Payload) == 2 {
+	case dp == PortDBDiscovery || sp == PortDBDiscovery:
+		if len(p.Payload) == 0 {
+			return
+		}
+		if sp == PortDBDiscovery && len(p.Payload) == 2 {
 			port := binary.BigEndian.Uint16(p.Payload)
 			d.dbPorts[port] = true
-			what = fmt.Sprintf("db-discovery reply: dbserver on port %d", port)
+			log.Info(fmt.Sprintf("db-discovery reply: dbserver on port %d", port), "route", route)
+			return
 		}
+		what := "db-discovery request"
+		if sp == PortDBDiscovery {
+			what = "db-discovery reply"
+		}
+		log.Info(what, "route", route, "len", len(p.Payload), "hex", logx.Dump(p.Payload))
 	case d.dbPorts[dp]:
-		what = "dbserver request"
+		d.dbFlow(log, p, true)
 	case d.dbPorts[sp]:
-		what = "dbserver response"
-	default:
-		return // unrelated TCP
+		d.dbFlow(log, p, false)
 	}
-	if len(p.Payload) == 0 {
-		log.Debug("tcp "+what, "route", route, "flags", flagString(p.Flags))
-		return
-	}
-	if logx.TraceEnabled() || d.Obs.Verbose {
-		log.Info("tcp "+what, "route", route, "len", len(p.Payload), "flags", flagString(p.Flags), "hex", logx.Dump(p.Payload))
-		return
-	}
-	log.Info("tcp "+what, "route", route, "len", len(p.Payload), "flags", flagString(p.Flags))
 }
 
 // ONC RPC program numbers.

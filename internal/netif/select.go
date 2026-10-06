@@ -76,6 +76,7 @@ func Probe(ctx context.Context, ifs []Interface, d time.Duration) (map[string][]
 // Config is persisted between runs.
 type Config struct {
 	Interface string `json:"interface,omitempty"`
+	Music     string `json:"music,omitempty"` // last music folder served
 }
 
 // ConfigPath returns the per-user config file path.
@@ -175,7 +176,9 @@ func (c *Chooser) Choose(ctx context.Context) (Interface, error) {
 }
 
 func (c *Chooser) save(ifc Interface) {
-	if err := SaveConfig(Config{Interface: ifc.Name}); err != nil {
+	cfg := LoadConfig()
+	cfg.Interface = ifc.Name
+	if err := SaveConfig(cfg); err != nil {
 		c.Log("could not save interface choice: %v", err)
 	}
 }

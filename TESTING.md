@@ -85,3 +85,25 @@ gives us ground truth for milestones 1–4 in one go.
 - What the CDJ showed, as a photo or description, and any error messages on
   its screen.
 - Your CDJ firmware version (shown under UTILITY → SYSTEM INFO).
+
+### Milestone 2: browsing
+
+1. Quit rekordbox, then run:
+   ```bash
+   go build -o bin/slipmat ./cmd/slipmat
+   bin/slipmat serve -v -music /Users/lennart/Music/Slipmat 2>&1 | tee captures/slipmat-m2.log
+   ```
+   `-music` is remembered, so later runs need only `bin/slipmat serve -v`.
+2. On a CDJ-3000, select Slipmat under SOURCE. The root menu should show
+   ARTIST, ALBUM, TRACK and PLAYLIST.
+3. Try each menu:
+   - **TRACK:** all tracks with titles. Scroll to the end to check paging.
+   - **PLAYLIST:** your folders. Folders with sub-folders open as folders,
+     the others as playlists of their tracks.
+   - **ARTIST / ALBUM:** only populated for tagged files.
+4. Highlight a track and open its info popup: duration, BPM and key where
+   the tags have them.
+5. Loading a track is expected to fail until milestone 3 (NFS).
+
+**Send back:** `captures/slipmat-m2.log`, and what looked wrong or hung
+(which menu, which item).

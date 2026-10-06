@@ -11,12 +11,16 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/yniverz/slipmat/internal/dbserver"
 	"github.com/yniverz/slipmat/internal/device"
+	"github.com/yniverz/slipmat/internal/library"
 	"github.com/yniverz/slipmat/internal/logx"
 	"github.com/yniverz/slipmat/internal/monitor"
 	"github.com/yniverz/slipmat/internal/netif"
@@ -129,7 +133,9 @@ func (c *common) chooseInterface(ctx context.Context) (netif.Interface, error) {
 		if err != nil {
 			return ifc, err
 		}
-		if err := netif.SaveConfig(netif.Config{Interface: ifc.Name}); err != nil {
+		cfg := netif.LoadConfig()
+		cfg.Interface = ifc.Name
+		if err := netif.SaveConfig(cfg); err != nil {
 			log.Warn("could not save interface choice", "err", err)
 		}
 		return ifc, nil
@@ -247,6 +253,18 @@ func cmdDecode(args []string) error {
 	return d.DecodeFile(fs.Arg(0))
 }
 
+// scanLibrary scans dir with ffprobe, caching metadata in the user cache dir.
+func scanLibrary(ctx context.Context, dir string) (*library.Library, error) {
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		return nil, errors.New("ffprobe not found: install ffmpeg (brew install ffmpeg)")
+	}
+	cache := ""
+	if d, err := os.UserCacheDir(); err == nil {
+		cache = filepath.Join(d, "slipmat", "metadata.json")
+	}
+	return library.Scan(ctx, dir, library.ScanOptions{Prober: library.FFprobe{}, CachePath: cache, Log: logx.Component("library")})
+}
+
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	var c common
@@ -255,10 +273,17 @@ func cmdServe(args []string) error {
 	host := fs.String("host-name", "", "computer name shown on the players (default: Slipmat)")
 	devNum := fs.Uint("device-number", 17, "device number to claim (rekordbox uses 17)")
 	force := fs.Bool("force", false, "start even if another rekordbox source is on the link")
+	music := fs.String("music", "", "music folder to serve (remembered; default: the last one used)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	logx.Stderr(c.verbose)
+	if *music == "" {
+		*music = netif.LoadConfig().Music
+	}
+	if *music == "" {
+		return errors.New("no music folder: pass -music /path/to/folder")
+	}
 	if *devNum == 0 || *devNum > 127 {
 		return errors.New("-device-number must be between 1 and 127")
 	}
@@ -274,14 +299,35 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	lib, err := scanLibrary(ctx, *music)
+	if err != nil {
+		return err
+	}
+	cfg := netif.LoadConfig()
+	cfg.Music = lib.Root
+	netif.SaveConfig(cfg)
+
+	db := &dbserver.Server{Lib: func() *library.Library { return lib }, Device: uint8(*devNum), Log: logx.Component("db")}
+	if err := db.Listen(ifc.Prefix.Addr()); err != nil {
+		return err
+	}
+	dbCtx, stopDB := context.WithCancel(context.Background())
+	defer stopDB()
+	go db.Serve(dbCtx)
+
 	log := logx.Component("device")
 	dev, err := device.New(device.Config{
 		Interface:    ifc,
 		Name:         *name,
 		Host:         strings.TrimSpace(*host),
 		DeviceNumber: uint8(*devNum),
-		Media:        prolink.MediaInfo{Name: *host, Settings: true}, // Settings mirrors rekordbox 7 [RB7]
-		Force:        *force,
+		Media: prolink.MediaInfo{
+			Name:      *host,
+			Tracks:    uint16(min(lib.TrackCount(), 0xffff)),
+			Playlists: uint16(min(lib.FolderCount(), 0xffff)),
+			Settings:  true, // mirrors rekordbox 7 [RB7]
+		},
+		Force: *force,
 	}, log)
 	if err != nil {
 		return err
