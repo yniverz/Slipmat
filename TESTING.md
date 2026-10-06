@@ -107,3 +107,18 @@ gives us ground truth for milestones 1–4 in one go.
 
 **Send back:** `captures/slipmat-m2.log`, and what looked wrong or hung
 (which menu, which item).
+
+### Milestone 3: loading and playback
+
+1. Quit rekordbox, then run
+   `bin/slipmat serve -v 2>&1 | tee captures/slipmat-m3.log`
+   (it uses the remembered music folder).
+2. Optional, in a second terminal: `scripts/capture.sh slipmat-m3`. If
+   anything stalls, this shows exactly what the player waited for.
+3. SOURCE → Slipmat: note how long it takes until the menu appears (it
+   should now be about a second).
+4. PLAYLIST → a folder → load a track, then press play. Waveforms and beat
+   grid are expected to be missing (milestone 4).
+5. Load a second track on the other deck.
+
+**Send back:** whether audio plays and how long loading took, and the log.

@@ -82,7 +82,9 @@ func parseFFprobe(out []byte) (*Probe, error) {
 	case codec == "aac":
 		p.Format = FormatAAC
 	case codec == "alac":
-		p.Format = FormatALAC
+		// The CDJ-3000 plays ALAC, but we don't know the track-info decoder
+		// id for it yet; skip rather than guess.
+		return nil, fmt.Errorf("%w: ALAC is not supported yet", ErrUnsupported)
 	case codec == "flac":
 		p.Format = FormatFLAC
 	case strings.HasPrefix(codec, "pcm_") && strings.Contains(o.Format.FormatName, "wav"):

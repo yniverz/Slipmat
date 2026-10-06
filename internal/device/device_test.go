@@ -111,8 +111,8 @@ func TestHelloQueryAnsweredWith0x11(t *testing.T) {
 	d, _, st := newTestDevice(t)
 	d.handle(in(prolink.PortStatus, cdjPacket(prolink.KindRBHelloQuery, 0x2c, nil)))
 	out := st.take()
-	if len(out) != 2 {
-		t.Fatalf("want 0x11 then 0x16, sent %d packets", len(out))
+	if len(out) != 1 {
+		t.Fatalf("want only 0x11 (no 0x16 after hello), sent %d packets", len(out))
 	}
 	for _, o := range out {
 		if o.to != netip.AddrPortFrom(cdjIP, prolink.PortStatus) {
@@ -122,14 +122,7 @@ func TestHelloQueryAnsweredWith0x11(t *testing.T) {
 	if s := decodeOne(t, out[0]); s.Kind != prolink.KindRBHello || s.HostName != "Slipmat" || s.Device != 17 {
 		t.Fatalf("bad hello: %v", s)
 	}
-	if s := decodeOne(t, out[1]); s.Kind != prolink.KindRBStatus {
-		t.Fatalf("hello must be followed by 0x16, got %v", s)
-	}
-	// A repeated query is answered, but the 0x16 is sent only once.
-	d.handle(in(prolink.PortStatus, cdjPacket(prolink.KindRBHelloQuery, 0x2c, nil)))
-	if out := st.take(); len(out) != 1 {
-		t.Fatalf("repeat query: sent %d packets", len(out))
-	}
+
 }
 
 func TestMediaQuery(t *testing.T) {

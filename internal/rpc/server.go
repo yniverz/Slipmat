@@ -23,6 +23,9 @@ type Server struct {
 	Conn     *net.UDPConn
 	Programs map[uint32]Handler
 	Log      *slog.Logger
+	// Workers > 1 handles calls concurrently (NFS: players read from
+	// several sockets in parallel). [RB7]
+	Workers int
 }
 
 // Port returns the local UDP port.
@@ -35,6 +38,7 @@ func (s *Server) Serve(ctx context.Context) {
 		<-ctx.Done()
 		s.Conn.Close()
 	}()
+	sem := make(chan struct{}, max(s.Workers, 1))
 	buf := make([]byte, 65536)
 	for {
 		n, from, err := s.Conn.ReadFromUDPAddrPort(buf)
@@ -46,11 +50,15 @@ func (s *Server) Serve(ctx context.Context) {
 			continue
 		}
 		pkt := append([]byte(nil), buf[:n]...)
-		if reply := s.handle(pkt, from); reply != nil {
-			if _, err := s.Conn.WriteToUDPAddrPort(reply, from); err != nil {
-				s.Log.Warn("rpc reply failed", "to", from.String(), "err", err)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem }()
+			if reply := s.handle(pkt, from); reply != nil {
+				if _, err := s.Conn.WriteToUDPAddrPort(reply, from); err != nil {
+					s.Log.Warn("rpc reply failed", "to", from.String(), "len", len(reply), "err", err)
+				}
 			}
-		}
+		}()
 	}
 }
 

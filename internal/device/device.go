@@ -44,8 +44,7 @@ const (
 	claimRounds       = 6
 	keepAliveInterval = 2 * time.Second
 	statusInterval    = 100 * time.Millisecond
-	helloToStatus     = 200 * time.Millisecond // 0x11 -> unprompted 0x16
-	quitToLeave       = time.Second            // 0x16 on quit -> 0x08 leave (rekordbox 7 waited ~9 s)
+	quitToLeave       = time.Second // 0x16 on quit -> 0x08 leave (rekordbox 7 waited ~9 s)
 	preflightDuration = 3 * time.Second
 
 	// PortPortmap is rekordbox's non-standard portmapper port. [VN][RB7]
@@ -65,7 +64,8 @@ type Config struct {
 	Host         string // computer name shown on the CDJ (0x11 packet)
 	DeviceNumber uint8  // 17 by default (rekordbox)
 	Media        prolink.MediaInfo
-	Force        bool // start even if another rekordbox is on the link
+	MusicRoot    string // exported over NFS ("" = no NFS server)
+	Force        bool   // start even if another rekordbox is on the link
 }
 
 // packetConn is the subset of *net.UDPConn the device writes to (fakeable in tests).
@@ -146,7 +146,11 @@ func (d *Device) Run(ctx context.Context) error {
 	defer stopSvc()
 
 	var conns []*net.UDPConn
-	for _, port := range []int{prolink.PortAnnounce, prolink.PortBeat, prolink.PortStatus, PortPortmap, 0} {
+	ports := []int{prolink.PortAnnounce, prolink.PortBeat, prolink.PortStatus, PortPortmap, 0}
+	if d.cfg.MusicRoot != "" {
+		ports = append(ports, PortNFS)
+	}
+	for _, port := range ports {
 		c, err := netif.ListenUDP(svcCtx, ifc, port)
 		if err != nil {
 			return err
@@ -156,7 +160,11 @@ func (d *Device) Run(ctx context.Context) error {
 	}
 	d.status = conns[2]
 	d.bcast = func(port int, pkt []byte) error { return d.sendEphemeral(svcCtx, port, pkt) }
-	if err := d.startRPC(svcCtx, conns[3], conns[4]); err != nil {
+	var nfsConn *net.UDPConn
+	if len(conns) > 5 {
+		nfsConn = conns[5]
+	}
+	if err := d.startRPC(svcCtx, conns[3], conns[4], nfsConn); err != nil {
 		return err
 	}
 
@@ -217,9 +225,24 @@ func (d *Device) Run(ctx context.Context) error {
 	}
 }
 
-// startRPC serves the portmapper on pm (UDP 50111) and MOUNT on mnt.
-func (d *Device) startRPC(ctx context.Context, pm, mnt *net.UDPConn) error {
+// startRPC serves the portmapper on pm (UDP 50111), MOUNT on mnt and,
+// when nfs is non-nil, NFS v2 for the music folder.
+func (d *Device) startRPC(ctx context.Context, pm, mnt, nfs *net.UDPConn) error {
 	log := logx.Component("rpc")
+	if nfs != nil {
+		fsrv, err := rpc.NewNFS(d.cfg.MusicRoot)
+		if err != nil {
+			return err
+		}
+		// READ replies are single 16-32 KiB datagrams; macOS refuses to send
+		// UDP datagrams larger than the socket send buffer (9 KiB default).
+		if err := nfs.SetWriteBuffer(4 << 20); err != nil {
+			log.Warn("could not enlarge the NFS send buffer; large reads may fail", "err", err)
+		}
+		nfs.SetReadBuffer(1 << 20)
+		go (&rpc.Server{Conn: nfs, Programs: map[uint32]rpc.Handler{rpc.ProgNFS: fsrv}, Log: logx.Component("nfs"), Workers: 8}).Serve(ctx)
+		log.Info("NFS server ready (read-only)", "root", fsrv.Root, "port", PortNFS)
+	}
 	mount := &rpc.Mount{Exports: d.Exports, Event: d.mountEvent}
 	mountSrv := &rpc.Server{Conn: mnt, Programs: map[uint32]rpc.Handler{rpc.ProgMount: mount}, Log: log}
 	portmap := &rpc.Portmap{}
@@ -439,16 +462,13 @@ func (d *Device) handleStatus(in inbound) {
 		d.log.Info("player asked who we are; sending rekordbox hello", "from", from.String(), "dev", s.Device, "host", d.cfg.Host)
 		d.send(d.status, reply, prolink.EncodeRBHello(d.id.Name, d.id.DeviceNumber, d.cfg.Host), slog.LevelDebug)
 		d.mu.Lock()
-		first := !d.helloed[from]
 		d.helloed[from] = true
 		d.mu.Unlock()
-		if first {
-			// rekordbox follows its hello with an unprompted 0x16, after
-			// which the player (re)reads our MOUNT export list. [RB7]
-			d.after(helloToStatus, func() {
-				d.send(d.status, reply, prolink.EncodeRBStatus(d.id.Name, d.id.DeviceNumber), slog.LevelDebug)
-			})
-		}
+		// rekordbox 7 follows its hello with an unprompted 0x16 because its
+		// export list starts out empty; the 0x16 makes players re-read it.
+		// Ours is ready immediately, and a 0x16 arriving after the player
+		// has linked stalled browsing for ~30 s on a CDJ-3000, so we only
+		// send 0x16 when quitting.
 
 	case prolink.KindMediaQuery:
 		q := s.MediaQuery

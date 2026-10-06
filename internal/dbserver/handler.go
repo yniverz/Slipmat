@@ -79,7 +79,7 @@ func (s *Session) Handle(m *Message) []*Message {
 	case ReqRenderMenu:
 		return s.render(m, d)
 	case ReqRootMenu:
-		return s.prepare(m, d, rootMenu())
+		return s.prepare(m, d, rootMenu(lib))
 	case ReqSortMenu:
 		return s.prepare(m, d, sortMenu())
 	case ReqArtistMenu:
@@ -111,6 +111,14 @@ func (s *Session) Handle(m *Message) []*Message {
 			return []*Message{success(m, 0xffffffff)}
 		}
 		return s.prepare(m, d, metadataItems(lib, t))
+	case ReqTrackInfo:
+		t, ok := lib.Track(m.NumArg(1))
+		if !ok {
+			s.menus[d.Menu] = nil
+			return []*Message{success(m, 0xffffffff)}
+		}
+		s.Log.Info("player is loading a track", "track", t.Title, "path", t.RelPath, "format", string(t.Format), "dev", d.Device)
+		return s.prepare(m, d, trackInfoItems(t))
 	case ReqArtwork:
 		return []*Message{notFound(m, RespArtwork, false)}
 	case ReqAnalysisTag, 0x2d04:
@@ -164,17 +172,25 @@ func (s *Session) render(m *Message, d DMST) []*Message {
 }
 
 // rootMenu lists the categories we support. IDs and types match rekordbox 7;
-// the player requests 0x1000+ID for most of them. [RB7]
-func rootMenu() []Item {
+// the player requests 0x1000+ID for most of them. [RB7] Empty categories
+// are left out: the player opens the first one automatically, and an
+// untagged library has no artists or albums.
+func rootMenu(lib *library.Library) []Item {
 	cat := func(id, typ uint32, name string) Item {
 		return Item{ID: id, Label1: menuLabel(name), Type: typ}
 	}
-	return []Item{
-		cat(0x02, ItemMenuArtist, "ARTIST"),
-		cat(0x03, ItemMenuAlbum, "ALBUM"),
-		cat(0x04, ItemMenuTrack, "TRACK"),
-		cat(0x05, ItemMenuPlaylst, "PLAYLIST"),
+	var items []Item
+	if len(lib.Artists()) > 0 {
+		items = append(items, cat(0x02, ItemMenuArtist, "ARTIST"))
 	}
+	if len(lib.Albums()) > 0 {
+		items = append(items, cat(0x03, ItemMenuAlbum, "ALBUM"))
+	}
+	items = append(items, cat(0x04, ItemMenuTrack, "TRACK"))
+	if lib.FolderCount() > 0 || lib.TrackCount() > 0 {
+		items = append(items, cat(0x05, ItemMenuPlaylst, "PLAYLIST"))
+	}
+	return items
 }
 
 // sortMenu is rekordbox 7's sort popup, verbatim. [RB7]
@@ -292,6 +308,44 @@ func metadataItems(lib *library.Library, t *library.Track) []Item {
 		{ID: 0, Label1: t.Label, Type: ItemLabel},
 		{ID: 0, Type: ItemOrigArtist},
 		{ID: 0, Type: ItemRemixer},
+	}
+}
+
+// DecoderID is the id of the first track-info item, which tells the player
+// which audio decoder to use: MP3 = 1, FLAC = 5 [RB7]; AAC = 4, WAV = 0x0b,
+// AIFF = 0x0c [VN, unconfirmed].
+func DecoderID(f library.Format) uint32 {
+	switch f {
+	case library.FormatMP3:
+		return 1
+	case library.FormatAAC:
+		return 4
+	case library.FormatFLAC:
+		return 5
+	case library.FormatWAV:
+		return 0x0b
+	case library.FormatAIFF:
+		return 0x0c
+	}
+	return 1
+}
+
+// NFSPath is the path players read a track from: the export root is the
+// music folder, so the path is relative to it.
+func NFSPath(t *library.Track) string { return "/" + t.RelPath }
+
+// trackInfoItems answers 0x2102 (sent when a track is loaded) with the
+// seven items rekordbox 7 sends: decoder, duration, tempo, comment, path
+// (arg 0 = file size), an unknown 0x2f item (1) and key. [RB7]
+func trackInfoItems(t *library.Track) []Item {
+	return []Item{
+		{ID: DecoderID(t.Format), Type: ItemTitle},
+		{ID: t.Duration, Type: ItemDuration},
+		{ID: t.BPM100, Type: ItemTempo},
+		{ID: t.ID, Type: ItemComment},
+		{Parent: uint32(min(t.Size, 0xffffffff)), ID: t.ID, Label1: NFSPath(t), Type: ItemPath},
+		{ID: 1, Type: ItemFileType},
+		{ID: t.KeyID, Label1: t.Key, Type: ItemKey},
 	}
 }
 

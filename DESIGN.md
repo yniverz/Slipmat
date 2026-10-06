@@ -213,6 +213,23 @@ dbserver, from the same capture:
   0x2b04 cues, 0x2204 beat grid, 0x2c04 PQT2, 0x2504, 0x2d04 PWV6/PWV7 (.2EX),
   0x2004, 0x2c04 PWV5, 0x2904 and 0x2c04 PSSI, then NFS reads of the path.
 
+NFS (loading), same capture:
+
+- The player LOOKUPs the track-info path one component at a time from the
+  zero root handle. **Names are UTF-16LE**, and pad bytes may be garbage.
+  GETATTR, then READs of 16–32 KiB from several sockets in parallel. Each
+  reply is one large UDP datagram, so the send buffer must be enlarged
+  (macOS defaults to 9 KiB).
+- Track info: the title item's id selects the decoder (MP3 = 1, FLAC = 5
+  confirmed; AAC 4, WAV 0x0b, AIFF 0x0c from Vynull). The path item carries
+  the file size in arg 0. Slipmat exports the music folder as `/`, so
+  paths are relative to it and nothing else is reachable.
+
+Slipmat on hardware:
+
+- Sending the post-hello 0x16 after a player had already linked stalled
+  browsing for ~30 s. We now only send 0x16 when quitting.
+
 From the CDJ-2000NXS captures [DSC]:
 
 - Final-stage claims are 0x26 bytes. A real player's media response uses

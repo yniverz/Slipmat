@@ -327,7 +327,8 @@ func cmdServe(args []string) error {
 			Playlists: uint16(min(lib.FolderCount(), 0xffff)),
 			Settings:  true, // mirrors rekordbox 7 [RB7]
 		},
-		Force: *force,
+		MusicRoot: lib.Root,
+		Force:     *force,
 	}, log)
 	if err != nil {
 		return err
