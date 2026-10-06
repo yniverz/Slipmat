@@ -26,6 +26,7 @@ bin/slipmat interfaces            # list network interfaces, show which see Pro 
 bin/slipmat monitor               # log all Pro DJ Link traffic (passive, sends nothing)
 bin/slipmat decode capture.pcap   # decode a tcpdump/Wireshark capture offline
 bin/slipmat serve                 # appear on the link as a rekordbox source
+scripts/capture.sh NAME           # record a tcpdump capture into captures/ (see TESTING.md)
 ```
 
 Useful flags: `-i/--interface`, `-v` (debug), `-vv` (trace and hex dumps).

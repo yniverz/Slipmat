@@ -135,7 +135,8 @@ where permitted), so we never announce on Wi-Fi by accident. Link-local
    CDJ-3000 and the logs to send back.
 
 Capture recipe: rekordbox runs on the same Mac, so there's no second machine
-or mirror port. Run `sudo tcpdump -i <lan-if> -s 0 -w captures/<name>.pcap`.
+or mirror port. Run `scripts/capture.sh <name>` (tcpdump on the saved
+interface, written to the git-ignored `captures/`). See TESTING.md.
 
 ## 7. Milestones
 
@@ -168,6 +169,22 @@ or mirror port. Run `sudo tcpdump -i <lan-if> -s 0 -w captures/<name>.pcap`.
   0x2c04, and whether it falls back to PWV4/PWV5 when we don't have them.
 - NFS: export path naming, file-handle format expectations, READ size and
   retransmit behaviour; macOS UDP buffer sizes.
+
+### Findings so far (from real CDJ-2000NXS bytes, [DSC])
+
+- Final-stage claim packets are 0x26 bytes, not 0x2a as the docs say.
+  Keep-alive byte 0x25 is 0x01 or 0x02 depending on the player, so it
+  isn't a type field.
+- A media response from a real player uses subtype 0x00 and reports
+  `playlists=35` at 0xae. That explains the constant 35 in Vynull.
+  Vynull's rekordbox version uses subtype 0x01. Which one does rekordbox use?
+- The media query carries the target at 0x2b and the slot at 0x2f (Vynull
+  reads the target from 0x27, which is the last byte of the IP address).
+- Players send 50002 packets from ephemeral source ports, so replies must go
+  to port 50002, not to the source port.
+- Before a player sends a media query for another player's slot, it first
+  runs portmap GETPORT (mount, nfs) and MOUNT. Expect the same order against
+  us in milestone 3.
 
 ## 9. Licensing
 
