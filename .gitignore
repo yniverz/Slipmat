@@ -1,0 +1,13 @@
+# build output
+/bin/
+/dist/
+/slipmat
+
+# raw packet captures may contain library/track names — keep them local
+/captures/
+*.pcap
+*.pcapng
+
+# local config / logs
+*.log
+.DS_Store
