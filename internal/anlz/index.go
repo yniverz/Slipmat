@@ -235,10 +235,20 @@ func (ix *Index) IDs() []uint32 {
 	return ids
 }
 
+// Sources of analysis data.
+const (
+	SourceRekordbox = "rekordbox"
+	SourceSlipmat   = "slipmat" // generated waveforms only
+)
+
 // Analysis is a track's parsed analysis files.
 type Analysis struct {
+	Source        string
 	DAT, EXT, EX2 *File
 }
+
+// FromRekordbox reports whether the data was written by rekordbox.
+func (a *Analysis) FromRekordbox() bool { return a != nil && a.Source == SourceRekordbox }
 
 // Section looks a tag up in the given file kind ("DAT", "EXT" or "2EX").
 func (a *Analysis) Section(kind, tag string) (Section, bool) {
@@ -280,7 +290,7 @@ func (ix *Index) Load(id uint32) *Analysis {
 		return a
 	}
 	ix.mu.Unlock()
-	a := &Analysis{}
+	a := &Analysis{Source: SourceRekordbox}
 	a.DAT, _ = ReadFile(set.DAT)
 	if set.EXT != "" {
 		a.EXT, _ = ReadFile(set.EXT)

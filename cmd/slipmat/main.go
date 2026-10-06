@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/yniverz/slipmat/internal/netif"
 	"github.com/yniverz/slipmat/internal/previewcache"
 	"github.com/yniverz/slipmat/internal/prolink"
+	"github.com/yniverz/slipmat/internal/waveform"
 )
 
 var version = "0.1.0-dev"
@@ -39,8 +41,10 @@ Usage:
   slipmat decode     [flags] FILE   decode a tcpdump/Wireshark capture (.pcap/.pcapng)
   slipmat serve      [flags]        appear on the link as a rekordbox source
   slipmat library    [flags]        scan the music folder and show which tracks have rekordbox analysis
+  slipmat waveforms  [flags]        generate waveforms now for tracks without rekordbox analysis (no network)
   slipmat load       [flags]        (dev) tell a player to load a track from a running serve
   slipmat query      [flags] WHAT…  (dev) send dbserver queries to a player
+  slipmat render     [flags]        (dev) draw a track's waveforms to a PNG (rekordbox vs slipmat)
   slipmat version
 
 Common flags:
@@ -69,10 +73,14 @@ func main() {
 		err = cmdServe(args)
 	case "library":
 		err = cmdLibrary(args)
+	case "waveforms":
+		err = cmdWaveforms(args)
 	case "load":
 		err = cmdLoad(args)
 	case "query":
 		err = cmdQuery(args)
+	case "render":
+		err = cmdRender(args)
 	case "version", "-version", "--version":
 		fmt.Println("slipmat", version)
 	case "help", "-h", "--help":
@@ -146,6 +154,7 @@ func (c *common) chooseInterface(ctx context.Context) (netif.Interface, error) {
 		}
 		cfg := netif.LoadConfig()
 		cfg.Interface = ifc.Name
+		cfg.InterfaceMAC = fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", ifc.MAC[0], ifc.MAC[1], ifc.MAC[2], ifc.MAC[3], ifc.MAC[4], ifc.MAC[5])
 		if err := netif.SaveConfig(cfg); err != nil {
 			log.Warn("could not save interface choice", "err", err)
 		}
@@ -295,6 +304,29 @@ func indexAnalysis(lib *library.Library, extra []string) *anlz.Index {
 	return ix
 }
 
+// startWaveforms queues waveform generation for every track without
+// rekordbox analysis and runs it in the background. Results are cached in
+// the user cache directory only.
+func startWaveforms(ctx context.Context, lib *library.Library, ix *anlz.Index) *waveform.Store {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return nil
+	}
+	log := logx.Component("waveform")
+	st := waveform.NewStore(filepath.Join(dir, "slipmat", "waveforms"), min(max(runtime.NumCPU()/2, 1), 4), log)
+	var jobs []waveform.Job
+	for _, t := range lib.Tracks() {
+		if _, ok := ix.Set(t.ID); ok {
+			continue
+		}
+		jobs = append(jobs, waveform.Job{TrackID: t.ID, Path: t.Path, Size: t.Size, ModTime: t.ModTime})
+	}
+	cached, queued := st.Add(jobs)
+	log.Info("own waveforms for tracks without rekordbox analysis", "tracks", len(jobs), "cached", cached, "to_generate", queued)
+	go st.Run(ctx)
+	return st
+}
+
 // scanLibrary scans dir with ffprobe, caching metadata in the user cache dir.
 func scanLibrary(ctx context.Context, dir string) (*library.Library, error) {
 	if _, err := exec.LookPath("ffprobe"); err != nil {
@@ -349,6 +381,46 @@ func cmdLibrary(args []string) error {
 	return nil
 }
 
+// cmdWaveforms generates the waveform cache offline, so serve starts with
+// everything ready.
+func cmdWaveforms(args []string) error {
+	fs := flag.NewFlagSet("waveforms", flag.ContinueOnError)
+	music := fs.String("music", "", "music folder (default: the last one served)")
+	verbose := 0
+	fs.Func("v", "debug logging", func(string) error { verbose++; return nil })
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	logx.Stderr(verbose)
+	if *music == "" {
+		*music = netif.LoadConfig().Music
+	}
+	if *music == "" {
+		return errors.New("no music folder: pass -music /path/to/folder")
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	lib, err := scanLibrary(ctx, *music)
+	if err != nil {
+		return err
+	}
+	ix := indexAnalysis(lib, nil)
+	start := time.Now()
+	st := startWaveforms(ctx, lib, ix)
+	if st == nil {
+		return errors.New("no cache directory available")
+	}
+	for st.Pending() > 0 || st.Busy() > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	fmt.Printf("done in %s\n", time.Since(start).Round(time.Second))
+	return nil
+}
+
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	var c common
@@ -395,7 +467,18 @@ func cmdServe(args []string) error {
 
 	ix := indexAnalysis(lib, anlzDirs)
 
-	db := &dbserver.Server{Lib: func() *library.Library { return lib }, Device: uint8(*devNum), Log: logx.Component("db"), Analysis: ix.Load}
+	waves := startWaveforms(ctx, lib, ix)
+	analysis := func(id uint32) *anlz.Analysis {
+		if a := ix.Load(id); a != nil {
+			return a // rekordbox analysis always wins
+		}
+		if waves != nil {
+			return waves.Get(id)
+		}
+		return nil
+	}
+
+	db := &dbserver.Server{Lib: func() *library.Library { return lib }, Device: uint8(*devNum), Log: logx.Component("db"), Analysis: analysis}
 	if d, err := os.UserCacheDir(); err == nil {
 		db.Previews = previewcache.New(filepath.Join(d, "slipmat", "cdj-previews"))
 	}

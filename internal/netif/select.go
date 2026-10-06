@@ -76,7 +76,10 @@ func Probe(ctx context.Context, ifs []Interface, d time.Duration) (map[string][]
 // Config is persisted between runs.
 type Config struct {
 	Interface string `json:"interface,omitempty"`
-	Music     string `json:"music,omitempty"` // last music folder served
+	// InterfaceMAC finds the same adapter again when macOS renames it
+	// (USB adapters change enN names between plug-ins).
+	InterfaceMAC string `json:"interface_mac,omitempty"`
+	Music        string `json:"music,omitempty"` // last music folder served
 }
 
 // ConfigPath returns the per-user config file path.
@@ -140,12 +143,18 @@ func (c *Chooser) Choose(ctx context.Context) (Interface, error) {
 	if c.Spec != "" {
 		return Find(ifs, c.Spec)
 	}
-	if saved := LoadConfig().Interface; saved != "" {
-		if ifc, err := Find(ifs, saved); err == nil {
+	cfg := LoadConfig()
+	if cfg.Interface != "" {
+		if ifc, err := Find(ifs, cfg.Interface); err == nil && (cfg.InterfaceMAC == "" || macString(ifc.MAC) == cfg.InterfaceMAC) {
 			c.Log("using saved interface %s (change with --interface or --pick)", ifc)
 			return ifc, nil
 		}
-		c.Log("saved interface %q is not available; choosing again", saved)
+		if ifc, ok := FindMAC(ifs, cfg.InterfaceMAC); ok {
+			c.Log("saved adapter %s is now called %s; using it", cfg.Interface, ifc)
+			c.save(ifc)
+			return ifc, nil
+		}
+		c.Log("saved interface %q is not available; choosing again", cfg.Interface)
 	}
 	c.Log("listening %s for Pro DJ Link devices on all interfaces...", c.ProbeFor)
 	seen, err := Probe(ctx, ifs, c.ProbeFor)
@@ -178,6 +187,7 @@ func (c *Chooser) Choose(ctx context.Context) (Interface, error) {
 func (c *Chooser) save(ifc Interface) {
 	cfg := LoadConfig()
 	cfg.Interface = ifc.Name
+	cfg.InterfaceMAC = macString(ifc.MAC)
 	if err := SaveConfig(cfg); err != nil {
 		c.Log("could not save interface choice: %v", err)
 	}
@@ -240,6 +250,9 @@ func Guess(ifs []Interface, seen map[string][]Sighting, saved string) (Interface
 			return ifc, nil
 		}
 	}
+	if ifc, ok := FindMAC(ifs, LoadConfig().InterfaceMAC); ok {
+		return ifc, nil
+	}
 	var traffic, wired []Interface
 	for _, ifc := range ifs {
 		if len(seen[ifc.Name]) > 0 {
@@ -256,4 +269,24 @@ func Guess(ifs []Interface, seen map[string][]Sighting, saved string) (Interface
 		return wired[0], nil
 	}
 	return Interface{}, errors.New("cannot guess the CDJ interface; pass it explicitly (see `slipmat interfaces`)")
+}
+
+func macString(m [6]byte) string {
+	if m == ([6]byte{}) {
+		return ""
+	}
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
+}
+
+// FindMAC returns the interface with the given hardware address.
+func FindMAC(ifs []Interface, mac string) (Interface, bool) {
+	if mac == "" {
+		return Interface{}, false
+	}
+	for _, i := range ifs {
+		if macString(i.MAC) == mac {
+			return i, true
+		}
+	}
+	return Interface{}, false
 }

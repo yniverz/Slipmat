@@ -147,3 +147,35 @@ it, such names are skipped with a warning.
    the CDJ analysing it itself as before.
 
 **Send back:** what showed up for each, and the log.
+
+### Own waveforms (tracks without rekordbox analysis)
+
+Slipmat generates every waveform format for tracks rekordbox hasn't
+analysed: PWAV/PWV2 mono preview, PWV3 blue/white detail, PWV4/PWV5 colour,
+PWV6/PWV7 CDJ-3000 3-band. There is no beat grid, BPM or phrase data. Results
+are cached in `~/Library/Caches/slipmat/waveforms`. Once rekordbox analyses a
+track, its data replaces ours on the next start.
+
+Order per track: rekordbox analysis > (overview only) the preview a CDJ
+uploaded > generated waveforms.
+
+Offline checks:
+
+```bash
+bin/slipmat waveforms                         # generate the cache now (~0.35 s/track on 4 cores)
+bin/slipmat render -track "Deep Inside" -out captures/w.png   # rekordbox (top) vs ours (bottom)
+SLIPMAT_CALIBRATE_DIR=~/Music/Slipmat go test ./internal/waveform -run Generator -v  # scores vs rekordbox
+SLIPMAT_LOADSIM_MUSIC=~/Music/Slipmat go test ./cmd/slipmat -run LoadSequence -v     # CDJ load rehearsal
+```
+
+On the CDJ-3000:
+
+1. `bin/slipmat serve -v 2>&1 | tee captures/slipmat-wave.log`
+2. Load an unanalysed track ("remix party" or "schnell"). You should see the
+   overview immediately, the scrolling waveform in RGB, blue and 3-band
+   (switch the waveform colour in the CDJ's settings), and no beat grid.
+3. Compare with an analysed "house 26" track: do the colours and levels
+   look similar?
+
+**Send back:** impressions per waveform type, ideally with a photo of an
+analysed and an unanalysed track side by side.

@@ -86,7 +86,7 @@ func TestPlayerPreviewUploadIsServedBack(t *testing.T) {
 	other := lib.Tracks()[1]
 	s.Analysis = func(id uint32) *anlz.Analysis {
 		if id == other.ID {
-			return &anlz.Analysis{}
+			return &anlz.Analysis{Source: anlz.SourceRekordbox}
 		}
 		return nil
 	}
@@ -94,5 +94,44 @@ func TestPlayerPreviewUploadIsServedBack(t *testing.T) {
 	s.Handle(upload)
 	if s.Previews.Get(previewKey(other)) != nil {
 		t.Fatal("stored a player preview for a track with rekordbox analysis")
+	}
+}
+
+// TestPreviewPriority: rekordbox analysis, then the player's uploaded
+// preview, then generated waveforms.
+func TestPreviewPriority(t *testing.T) {
+	lib := testLib()
+	tr := lib.Tracks()[0]
+	s := newSession(lib)
+	s.Previews = previewcache.New(t.TempDir())
+	pwav := func(v byte) *anlz.File {
+		body := make([]byte, 400)
+		for i := range body {
+			body[i] = v
+		}
+		return &anlz.File{Sections: []anlz.Section{sec("PWAV", 20, nil, body)}}
+	}
+	var current *anlz.Analysis
+	s.Analysis = func(uint32) *anlz.Analysis { return current }
+	first := func() byte {
+		m := s.Handle(&Message{TxID: 1, Type: ReqWavePreview, Args: []Arg{Num(dmstData), Num(0), Num(tr.ID), Num(0), Blob(nil)}})[0]
+		if len(m.Args) < 4 || len(m.Args[3].Blob) == 0 {
+			return 0xff
+		}
+		return m.Args[3].Blob[0]
+	}
+	current = &anlz.Analysis{Source: anlz.SourceSlipmat, DAT: pwav(5)}
+	if first() != 5 {
+		t.Fatal("generated preview not served")
+	}
+	up := make([]byte, previewcache.Size)
+	up[0] = 9
+	s.Previews.Put(previewKey(tr), up)
+	if first() != 9 {
+		t.Fatal("player's own preview must beat generated waveforms")
+	}
+	current = &anlz.Analysis{Source: anlz.SourceRekordbox, DAT: pwav(3)}
+	if first() != 3 {
+		t.Fatal("rekordbox analysis must win")
 	}
 }

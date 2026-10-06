@@ -11,15 +11,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yniverz/slipmat/internal/dbserver"
+	"github.com/yniverz/slipmat/internal/library"
 	"github.com/yniverz/slipmat/internal/logx"
 	"github.com/yniverz/slipmat/internal/netif"
 	"github.com/yniverz/slipmat/internal/prolink"
+	"github.com/yniverz/slipmat/internal/waveform"
 )
 
 // cmdLoad tells a player to load a track from a running `slipmat serve`.
@@ -149,5 +156,73 @@ func cmdQuery(args []string) error {
 			fmt.Printf("unknown query %q\n", what)
 		}
 	}
+	return nil
+}
+
+// cmdRender draws a track's waveforms to a PNG: rekordbox's (if any) above
+// Slipmat's generated ones, for visual comparison.
+func cmdRender(args []string) error {
+	fs := flag.NewFlagSet("render", flag.ContinueOnError)
+	music := fs.String("music", "", "music folder (default: the last one served)")
+	track := fs.String("track", "", "track id (see `slipmat library`) or part of its file name")
+	out := fs.String("out", "waveform.png", "output PNG")
+	from := fs.Float64("from", 60, "detail window start, seconds")
+	secs := fs.Float64("seconds", 8, "detail window length, seconds")
+	width := fs.Int("width", 1200, "image width")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	logx.Stderr(0)
+	if *music == "" {
+		*music = netif.LoadConfig().Music
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	lib, err := scanLibrary(ctx, *music)
+	if err != nil {
+		return err
+	}
+	var t *library.Track
+	if id, err := strconv.ParseUint(*track, 16, 32); err == nil {
+		t, _ = lib.Track(uint32(id))
+	}
+	if t == nil {
+		for _, c := range lib.Tracks() {
+			if *track != "" && strings.Contains(strings.ToLower(c.RelPath), strings.ToLower(*track)) {
+				t = c
+				break
+			}
+		}
+	}
+	if t == nil {
+		return fmt.Errorf("no track matches %q", *track)
+	}
+	ix := indexAnalysis(lib, nil)
+	samples, err := waveform.Decode(ctx, t.Path)
+	if err != nil {
+		return err
+	}
+	ours := waveform.Render(waveform.Generate(samples).Analysis(), *width, *from, *secs)
+	img := ours
+	if a := ix.Load(t.ID); a != nil {
+		rb := waveform.Render(a, *width, *from, *secs)
+		h := rb.Bounds().Dy()
+		img = image.NewRGBA(image.Rect(0, 0, *width, 2*h+6))
+		draw.Draw(img, rb.Bounds(), rb, image.Point{}, draw.Src)
+		draw.Draw(img, image.Rect(0, h, *width, h+6), &image.Uniform{color.RGBA{200, 40, 40, 255}}, image.Point{}, draw.Src)
+		draw.Draw(img, image.Rect(0, h+6, *width, 2*h+6), ours, image.Point{}, draw.Src)
+		fmt.Println("top: rekordbox, bottom (below the red line): slipmat")
+	} else {
+		fmt.Println("no rekordbox analysis for this track; showing slipmat only")
+	}
+	f, err := os.Create(*out)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		return err
+	}
+	fmt.Printf("%s -> %s\n", t.RelPath, *out)
 	return nil
 }

@@ -50,6 +50,7 @@ internal/rpc (nfs)     NFS v2 on top of the rpc package (read-only, sandboxed)
 internal/library       track model + Library interface; folder scanner; rekordbox-USB importer
 internal/anlz          ANLZ (.DAT/.EXT/.2EX) reader, file→track index, dbserver blob conversion
 internal/previewcache  waveform previews uploaded by CDJ-3000s for unanalysed tracks
+internal/waveform      own waveform generation (ffmpeg decode, streaming band filters), cache, renderer
 internal/pdb           export.pdb reader (to reuse an existing rekordbox USB export)
 ```
 
@@ -240,6 +241,22 @@ track, `anlz/TestAgainstRekordbox7`):
   exports record the full path.
 - A CDJ-3000 playing an unanalysed track uploads its own 900-byte preview
   with 0x2005 every ~250 ms.
+
+Waveform calibration (49 rekordbox-analysed tracks, half used for fitting,
+half for validation; `waveform/calibrate_test.go`):
+
+- Decode **without MP3 gapless trimming** (`-flags2 +skip_manual`). rekordbox
+  keeps the encoder delay, so trimmed audio is ~27 ms early. Detail entries
+  = ceil(samples / 294) at 44.1 kHz.
+- **The PWV6/PWV7 byte order is low, mid, high**, not mid, high, low as
+  beat-link and Vynull have it.
+- Mono height follows the full-band peak² (PWV3 r = 0.998). Whiteness follows
+  1 − bass share. PWV5 RGB is each band relative to the loudest band.
+  PWV4 bytes 0/2/3/4/5 are band peaks (r 0.89–0.98); byte 1 is unknown
+  (falls with level). PWV7 follows envelope followers (instant attack,
+  40–80 ms release, r 0.92–0.93).
+- rekordbox never writes values above 127 in PWV4/PWV6/PWV7, and we clamp
+  likewise (an XDJ-AZ reportedly restarts on larger PWV4 values [VN]).
 
 Slipmat on hardware:
 

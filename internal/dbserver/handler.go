@@ -152,18 +152,32 @@ func (s *Session) Handle(m *Message) []*Message {
 		}
 		return []*Message{notFound(m, RespBeatGrid, false)}
 	case ReqWavePreview:
-		// [DMST, 0, track, 0, blob] [RB7]
+		// [DMST, 0, track, 0, blob] [RB7]. Order: rekordbox analysis, then
+		// the player's own uploaded preview, then generated waveforms.
 		a := s.analysis(m.NumArg(2))
-		if pwav, ok := a.Section("DAT", "PWAV"); ok {
-			pwv2, has2 := a.Section("DAT", "PWV2")
-			blob := anlz.Preview(pwav, pwv2, has2)
+		reply := func(blob []byte) []*Message {
 			return []*Message{{TxID: m.TxID, Type: RespWavePreview, Args: []Arg{Num(ReqWavePreview), Num(0), Num(uint32(len(blob))), Blob(blob)}}}
+		}
+		fromAnalysis := func() ([]byte, bool) {
+			pwav, ok := a.Section("DAT", "PWAV")
+			if !ok {
+				return nil, false
+			}
+			pwv2, has2 := a.Section("DAT", "PWV2")
+			return anlz.Preview(pwav, pwv2, has2), true
+		}
+		if a.FromRekordbox() {
+			if blob, ok := fromAnalysis(); ok {
+				return reply(blob)
+			}
 		}
 		if t, ok := lib.Track(m.NumArg(2)); ok && s.Previews != nil {
 			if p := s.Previews.Get(previewKey(t)); p != nil {
-				blob := append(append([]byte(nil), p...), 0, 0, 0, 0) // 904 bytes like rekordbox
-				return []*Message{{TxID: m.TxID, Type: RespWavePreview, Args: []Arg{Num(ReqWavePreview), Num(0), Num(uint32(len(blob))), Blob(blob)}}}
+				return reply(append(append([]byte(nil), p...), 0, 0, 0, 0)) // 904 bytes like rekordbox
 			}
+		}
+		if blob, ok := fromAnalysis(); ok {
+			return reply(blob)
 		}
 		return []*Message{notFound(m, RespWavePreview, false)}
 	case ReqWaveDetail:
@@ -204,7 +218,7 @@ func (s *Session) storeUpload(m *Message) {
 		return
 	}
 	t, ok := s.Lib().Track(m.NumArg(2))
-	if !ok || s.analysis(t.ID) != nil {
+	if !ok || s.analysis(t.ID).FromRekordbox() {
 		return
 	}
 	if err := s.Previews.Put(previewKey(t), m.Args[6].Blob); err != nil {

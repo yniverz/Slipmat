@@ -83,3 +83,13 @@ func TestGuess(t *testing.T) {
 		t.Fatal("expected ambiguity error with two wired interfaces")
 	}
 }
+
+func TestFindMAC(t *testing.T) {
+	ifs := []Interface{{Name: "en9", MAC: [6]byte{0x34, 0x99, 0x71, 0xeb, 0x31, 0xe5}}}
+	if got, ok := FindMAC(ifs, "34:99:71:eb:31:e5"); !ok || got.Name != "en9" {
+		t.Fatal("renamed adapter not found by MAC")
+	}
+	if _, ok := FindMAC(ifs, ""); ok {
+		t.Fatal("empty MAC matched")
+	}
+}
