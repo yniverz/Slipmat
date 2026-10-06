@@ -122,3 +122,28 @@ gives us ground truth for milestones 1–4 in one go.
 5. Load a second track on the other deck.
 
 **Send back:** whether audio plays and how long loading took, and the log.
+
+### Milestone 4: beat grid and waveforms from rekordbox analysis
+
+Slipmat reads rekordbox's analysis files from:
+
+- rekordbox's own folder (`~/Library/Pioneer/rekordbox/share/PIONEER/USBANLZ`):
+  analyse tracks in rekordbox, then quit it;
+- any `PIONEER/USBANLZ` folder **copied from a USB export into the music
+  folder** (anywhere inside it);
+- extra folders given with `-anlz /path` (repeatable).
+
+Files are matched to tracks by file name (Unicode-normalised). A USB
+export's full path decides between tracks that share a file name; without
+it, such names are skipped with a warning.
+
+1. `bin/slipmat library` lists every track: `A` = analysis found
+   (`+3band` = CDJ-3000 3-band waveform data), with the BPM.
+2. `bin/slipmat serve -v 2>&1 | tee captures/slipmat-m4.log`
+3. Load an analysed track ("house 26"): the waveform overview, the scrolling
+   waveform (RGB and 3-band) and the beat grid should appear immediately.
+   Check beat sync against the other deck.
+4. Load an unanalysed track (another folder): it should still play, with
+   the CDJ analysing it itself as before.
+
+**Send back:** what showed up for each, and the log.

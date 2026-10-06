@@ -48,7 +48,7 @@ internal/rpc           ONC RPC + XDR codec, portmapper (UDP 50111), MOUNT v1 (la
 internal/dbserver      dbserver message codec (pure) + TCP server (menus/metadata/analysis)
 internal/rpc (nfs)     NFS v2 on top of the rpc package (read-only, sandboxed)
 internal/library       track model + Library interface; folder scanner; rekordbox-USB importer
-internal/anlz          ANLZ (.DAT/.EXT/.2EX) reader (later: writer) → beat grid, waveforms, cues
+internal/anlz          ANLZ (.DAT/.EXT/.2EX) reader, file→track index, dbserver blob conversion
 internal/pdb           export.pdb reader (to reuse an existing rekordbox USB export)
 ```
 
@@ -224,6 +224,21 @@ NFS (loading), same capture:
   confirmed; AAC 4, WAV 0x0b, AIFF 0x0c from Vynull). The path item carries
   the file size in arg 0. Slipmat exports the music folder as `/`, so
   paths are relative to it and nothing else is reachable.
+
+Analysis replies (verified byte for byte against rekordbox 7 for one
+track, `anlz/TestAgainstRekordbox7`):
+
+- 0x2c04/0x2d04 tag requests: LE length + the whole ANLZ section, padded to
+  4 bytes. Reply `[req, 0, len, blob, 1]`.
+- 0x2204 beat grid from PQTZ: 20-byte LE header (0x80000, n, 16n, 1, 1),
+  16 bytes per beat (LE beat, BPM × 100, ms, eight 0xff). Reply ends in 0.
+- 0x2004 preview: PWAV as (height, whiteness) pairs + PWV2 + 4 unknown bytes
+  (we send zeros). 0x2904 detail: PWV3 behind an LE header (n, size, n,
+  150, 1). 0x2504 (reply 0x4502): PVBR body byte-swapped to LE.
+- rekordbox's own analysis folder records only `?/<file name>` in PPTH; USB
+  exports record the full path.
+- A CDJ-3000 playing an unanalysed track uploads its own 900-byte preview
+  with 0x2005 every ~250 ms.
 
 Slipmat on hardware:
 

@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yniverz/slipmat/internal/anlz"
 	"github.com/yniverz/slipmat/internal/dbserver"
 	"github.com/yniverz/slipmat/internal/device"
 	"github.com/yniverz/slipmat/internal/library"
@@ -36,6 +37,7 @@ Usage:
   slipmat monitor    [flags]        passively log Pro DJ Link traffic (sends nothing)
   slipmat decode     [flags] FILE   decode a tcpdump/Wireshark capture (.pcap/.pcapng)
   slipmat serve      [flags]        appear on the link as a rekordbox source
+  slipmat library    [flags]        scan the music folder and show which tracks have rekordbox analysis
   slipmat version
 
 Common flags:
@@ -62,6 +64,8 @@ func main() {
 		err = cmdDecode(args)
 	case "serve":
 		err = cmdServe(args)
+	case "library":
+		err = cmdLibrary(args)
 	case "version", "-version", "--version":
 		fmt.Println("slipmat", version)
 	case "help", "-h", "--help":
@@ -253,6 +257,37 @@ func cmdDecode(args []string) error {
 	return d.DecodeFile(fs.Arg(0))
 }
 
+// multiFlag collects a repeatable string flag.
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// indexAnalysis matches rekordbox analysis files to the library and fills
+// in BPMs the tags didn't have.
+func indexAnalysis(lib *library.Library, extra []string) *anlz.Index {
+	log := logx.Component("anlz")
+	dirs := append(anlz.DefaultDirs(lib.Root), extra...)
+	refs := make([]anlz.TrackRef, 0, lib.TrackCount())
+	for _, t := range lib.Tracks() {
+		refs = append(refs, anlz.TrackRef{ID: t.ID, RelPath: t.RelPath})
+	}
+	ix, st := anlz.BuildIndex(dirs, refs, log)
+	for _, id := range ix.IDs() {
+		t, _ := lib.Track(id)
+		if t == nil || t.BPM100 != 0 {
+			continue
+		}
+		if a := ix.Load(id); a != nil {
+			if pqtz, ok := a.Section("DAT", "PQTZ"); ok {
+				t.BPM100 = anlz.FirstBPM(pqtz)
+			}
+		}
+	}
+	log.Info("rekordbox analysis matched", "tracks_with_analysis", st.Matched, "of", lib.TrackCount(), "analysis_files", st.Files, "ambiguous", st.Ambiguous, "for_other_tracks", st.Unmatched)
+	return ix
+}
+
 // scanLibrary scans dir with ffprobe, caching metadata in the user cache dir.
 func scanLibrary(ctx context.Context, dir string) (*library.Library, error) {
 	if _, err := exec.LookPath("ffprobe"); err != nil {
@@ -265,6 +300,48 @@ func scanLibrary(ctx context.Context, dir string) (*library.Library, error) {
 	return library.Scan(ctx, dir, library.ScanOptions{Prober: library.FFprobe{}, CachePath: cache, Log: logx.Component("library")})
 }
 
+func cmdLibrary(args []string) error {
+	fs := flag.NewFlagSet("library", flag.ContinueOnError)
+	music := fs.String("music", "", "music folder (default: the last one served)")
+	var anlzDirs multiFlag
+	fs.Var(&anlzDirs, "anlz", "extra folder with rekordbox analysis files (repeatable)")
+	verbose := 0
+	fs.Func("v", "debug logging", func(string) error { verbose++; return nil })
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	logx.Stderr(verbose)
+	if *music == "" {
+		*music = netif.LoadConfig().Music
+	}
+	if *music == "" {
+		return errors.New("no music folder: pass -music /path/to/folder")
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	lib, err := scanLibrary(ctx, *music)
+	if err != nil {
+		return err
+	}
+	ix := indexAnalysis(lib, anlzDirs)
+	for _, t := range lib.Tracks() {
+		mark, extra := "-", ""
+		if set, ok := ix.Set(t.ID); ok {
+			mark = "A"
+			if set.EX2 != "" {
+				extra = " +3band"
+			}
+		}
+		bpm := "   -  "
+		if t.BPM100 > 0 {
+			bpm = fmt.Sprintf("%6.2f", float64(t.BPM100)/100)
+		}
+		fmt.Printf("%s %s %-5s %s%s\n", mark, bpm, t.Format, t.RelPath, extra)
+	}
+	fmt.Println("\nA = rekordbox analysis found (beat grid + waveforms)")
+	return nil
+}
+
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	var c common
@@ -274,6 +351,8 @@ func cmdServe(args []string) error {
 	devNum := fs.Uint("device-number", 17, "device number to claim (rekordbox uses 17)")
 	force := fs.Bool("force", false, "start even if another rekordbox source is on the link")
 	music := fs.String("music", "", "music folder to serve (remembered; default: the last one used)")
+	var anlzDirs multiFlag
+	fs.Var(&anlzDirs, "anlz", "extra folder with rekordbox analysis files (repeatable); rekordbox's own folder and the music folder are always searched")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -307,7 +386,9 @@ func cmdServe(args []string) error {
 	cfg.Music = lib.Root
 	netif.SaveConfig(cfg)
 
-	db := &dbserver.Server{Lib: func() *library.Library { return lib }, Device: uint8(*devNum), Log: logx.Component("db")}
+	ix := indexAnalysis(lib, anlzDirs)
+
+	db := &dbserver.Server{Lib: func() *library.Library { return lib }, Device: uint8(*devNum), Log: logx.Component("db"), Analysis: ix.Load}
 	if err := db.Listen(ifc.Prefix.Addr()); err != nil {
 		return err
 	}

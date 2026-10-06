@@ -3,9 +3,12 @@
 package dbserver
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"strings"
 
+	"github.com/yniverz/slipmat/internal/anlz"
 	"github.com/yniverz/slipmat/internal/library"
 )
 
@@ -16,6 +19,10 @@ const (
 	ReqPrepare3007          = 0x3007 // [DMST(M=08), 0] at connect; rekordbox answers success(0)
 	ReqPrepare3100          = 0x3100 // [DMST, id, 0, 1] before (re)listing; rekordbox answers success(0)
 	ReqTracksForArtistAlbum = 0x1202
+	ReqAnalysisTag2EX       = 0x2d04 // like 0x2c04, for .2EX sections (PWV6/PWV7) [RB7]
+	ReqSeekIndex            = 0x2504 // PVBR; answered with 0x4502 [RB7]
+	ReqUploadPreview        = 0x2005 // a CDJ-3000 sending us its own waveform preview [hardware]
+	RespSeekIndex           = 0x4502
 )
 
 // StatusNotFound is the second argument of a data response when the data
@@ -38,6 +45,8 @@ type Session struct {
 	Lib    func() *library.Library
 	Device uint8 // our device number
 	Log    *slog.Logger
+	// Analysis returns a track's rekordbox analysis, or nil.
+	Analysis func(trackID uint32) *anlz.Analysis
 
 	menus map[uint8][]Item
 	// Closed is set after a teardown request.
@@ -121,19 +130,72 @@ func (s *Session) Handle(m *Message) []*Message {
 		return s.prepare(m, d, trackInfoItems(t))
 	case ReqArtwork:
 		return []*Message{notFound(m, RespArtwork, false)}
-	case ReqAnalysisTag, 0x2d04:
+	case ReqAnalysisTag, ReqAnalysisTag2EX:
+		// [DMST, track, tag, file kind]; tag and kind are ASCII read
+		// little-endian ("PWV4" = 0x34565750, "EXT\0" = 0x00545845). [RB7]
+		tag, kind := fourCC(m.NumArg(2)), strings.TrimRight(fourCC(m.NumArg(3)), "\x00")
+		if sec, ok := s.analysis(m.NumArg(1)).Section(kind, tag); ok {
+			blob := anlz.TagBlob(sec)
+			return []*Message{{TxID: m.TxID, Type: RespAnalysisTag, Args: []Arg{Num(uint32(m.Type)), Num(0), Num(uint32(len(blob))), Blob(blob), Num(1)}}}
+		}
+		s.Log.Debug("analysis section not available", "tag", tag, "file", kind, "track", m.NumArg(1))
 		return []*Message{notFound(m, RespAnalysisTag, true)}
-	case ReqWavePreview, ReqWaveDetail, ReqBeatGrid, ReqCuePoints, ReqCuePointsExt, 0x2504:
-		s.Log.Debug("analysis data not available yet", "req", TypeName(m.Type))
-		return []*Message{notFound(m, analysisResponse[m.Type], false)}
+	case ReqBeatGrid:
+		if sec, ok := s.analysis(m.NumArg(1)).Section("DAT", "PQTZ"); ok {
+			if blob, ok := anlz.BeatGrid(sec); ok {
+				return []*Message{{TxID: m.TxID, Type: RespBeatGrid, Args: []Arg{Num(ReqBeatGrid), Num(0), Num(uint32(len(blob))), Blob(blob), Num(0)}}}
+			}
+		}
+		return []*Message{notFound(m, RespBeatGrid, false)}
+	case ReqWavePreview:
+		// [DMST, 0, track, 0, blob] [RB7]
+		a := s.analysis(m.NumArg(2))
+		if pwav, ok := a.Section("DAT", "PWAV"); ok {
+			pwv2, has2 := a.Section("DAT", "PWV2")
+			blob := anlz.Preview(pwav, pwv2, has2)
+			return []*Message{{TxID: m.TxID, Type: RespWavePreview, Args: []Arg{Num(ReqWavePreview), Num(0), Num(uint32(len(blob))), Blob(blob)}}}
+		}
+		return []*Message{notFound(m, RespWavePreview, false)}
+	case ReqWaveDetail:
+		if sec, ok := s.analysis(m.NumArg(1)).Section("EXT", "PWV3"); ok {
+			if blob, ok := anlz.Detail(sec); ok {
+				return []*Message{{TxID: m.TxID, Type: RespWaveDetail, Args: []Arg{Num(ReqWaveDetail), Num(0), Num(uint32(len(blob))), Blob(blob)}}}
+			}
+		}
+		return []*Message{notFound(m, RespWaveDetail, false)}
+	case ReqSeekIndex:
+		if sec, ok := s.analysis(m.NumArg(1)).Section("DAT", "PVBR"); ok {
+			blob := anlz.SeekIndex(sec)
+			return []*Message{{TxID: m.TxID, Type: RespSeekIndex, Args: []Arg{Num(ReqSeekIndex), Num(0), Num(uint32(len(blob))), Blob(blob)}}}
+		}
+		return []*Message{notFound(m, RespSeekIndex, false)}
+	case ReqCuePointsExt:
+		// rekordbox 7's answer for a track without cues. Cues are milestone 5. [RB7]
+		return []*Message{{TxID: m.TxID, Type: RespCueExt, Args: []Arg{Num(ReqCuePointsExt), Num(1), Num(0), Blob(nil), Num(0)}}}
+	case ReqCuePoints:
+		return []*Message{notFound(m, RespCuePoints, false)}
+	case ReqUploadPreview:
+		// The CDJ-3000 analyses unanalysed tracks itself and offers us the
+		// result every ~250 ms while playing. Acknowledge and ignore.
+		return []*Message{success(m, 0)}
 	}
 	s.Log.Warn("unsupported request; answering with an empty result", "msg", m.String())
 	return []*Message{success(m, 0)}
 }
 
-var analysisResponse = map[uint16]uint16{
-	ReqWavePreview: RespWavePreview, ReqWaveDetail: RespWaveDetail, ReqBeatGrid: RespBeatGrid,
-	ReqCuePoints: RespCuePoints, ReqCuePointsExt: RespCueExt, 0x2504: 0x4502,
+// analysis returns a track's analysis or nil (nil-safe accessors follow).
+func (s *Session) analysis(id uint32) *anlz.Analysis {
+	if s.Analysis == nil {
+		return nil
+	}
+	return s.Analysis(id)
+}
+
+// fourCC decodes a tag sent as a little-endian 32-bit number.
+func fourCC(v uint32) string {
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], v)
+	return string(b[:])
 }
 
 // notFound builds rekordbox's "no such data" reply: [request, 0x32, 0,

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yniverz/slipmat/internal/anlz"
 	"github.com/yniverz/slipmat/internal/library"
 	"github.com/yniverz/slipmat/internal/logx"
 )
@@ -33,9 +34,10 @@ const (
 
 // Server answers dbserver connections.
 type Server struct {
-	Lib    func() *library.Library
-	Device uint8
-	Log    *slog.Logger
+	Lib      func() *library.Library
+	Device   uint8
+	Log      *slog.Logger
+	Analysis func(trackID uint32) *anlz.Analysis
 
 	disc, db net.Listener
 	conns    chan struct{}
@@ -151,6 +153,7 @@ func (s *Server) session(_ context.Context, c net.Conn) {
 	}
 	log.Info("player connected to dbserver")
 	sess := NewSession(s.Lib, s.Device, log)
+	sess.Analysis = s.Analysis
 	for {
 		c.SetDeadline(time.Now().Add(idleTimeout))
 		m, err := rd.ReadMessage()

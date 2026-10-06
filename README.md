@@ -25,7 +25,8 @@ go build -o bin/slipmat ./cmd/slipmat
 bin/slipmat interfaces            # list network interfaces, show which see Pro DJ Link traffic
 bin/slipmat monitor               # log all Pro DJ Link traffic (passive, sends nothing)
 bin/slipmat decode capture.pcap   # decode a tcpdump/Wireshark capture offline
-bin/slipmat serve                 # appear on the link as a rekordbox source
+bin/slipmat serve -music ~/Music  # serve a folder (remembered) as a rekordbox source
+bin/slipmat library               # show tracks and which have rekordbox analysis
 scripts/capture.sh NAME           # record a tcpdump capture into captures/ (see TESTING.md)
 ```
 
