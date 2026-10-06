@@ -49,6 +49,7 @@ internal/dbserver      dbserver message codec (pure) + TCP server (menus/metadat
 internal/rpc (nfs)     NFS v2 on top of the rpc package (read-only, sandboxed)
 internal/library       track model + Library interface; folder scanner; rekordbox-USB importer
 internal/anlz          ANLZ (.DAT/.EXT/.2EX) reader, file→track index, dbserver blob conversion
+internal/previewcache  waveform previews uploaded by CDJ-3000s for unanalysed tracks
 internal/pdb           export.pdb reader (to reuse an existing rekordbox USB export)
 ```
 
@@ -241,6 +242,18 @@ track, `anlz/TestAgainstRekordbox7`):
   with 0x2005 every ~250 ms.
 
 Slipmat on hardware:
+
+- **A CDJ-3000 does not serve its own analysis of tracks loaded from a
+  network source.** Requests for beat grid, waveforms or tags about the
+  loaded track (slot 4, any track type, posing as player 2, 3 or 17) are
+  answered with 0x4003 "unavailable". It answers only for its own USB/SD
+  slots. It also computes no BPM or grid for our tracks (we report them as
+  rekordbox-analysed); it only builds the preview and uploads it with
+  0x2005. Slipmat caches that upload (`previewcache`), and on later loads the
+  player takes it and stops re-analysing.
+- The rekordbox-style 0x19 load command works on the CDJ-3000 (acked with
+  0x1a). Loads sent before the player has linked are queued until it can
+  reach the source.
 
 - A blob argument after a number 0 is omitted from the wire. Deciding that
   by peeking at the next byte deadlocked live connections (the player sends

@@ -156,3 +156,14 @@ func TestDecodeCDJ3000Golden(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadTrackCommand(t *testing.T) {
+	b := EncodeLoadTrack("Slipmat", 17, 17, SlotRekordbox, 1, 0x52024286, 2)
+	if len(b) != 0x58 || b[0x20] != 0x01 || b[0x4b] != 0x32 || b[0x33] != 0x32 || b[0x40] != 1 {
+		t.Fatalf("% x", b)
+	}
+	s, err := DecodeStatus(b)
+	if err != nil || s.Kind != KindLoadTrack || s.TrackID != 0x52024286 || s.Slot != SlotRekordbox || s.Length != 0x34 {
+		t.Fatalf("%v %v", s, err)
+	}
+}

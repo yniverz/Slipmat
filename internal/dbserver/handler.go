@@ -10,6 +10,7 @@ import (
 
 	"github.com/yniverz/slipmat/internal/anlz"
 	"github.com/yniverz/slipmat/internal/library"
+	"github.com/yniverz/slipmat/internal/previewcache"
 )
 
 // Request types seen from a CDJ-3000 talking to rekordbox 7 that the [DS]
@@ -47,6 +48,9 @@ type Session struct {
 	Log    *slog.Logger
 	// Analysis returns a track's rekordbox analysis, or nil.
 	Analysis func(trackID uint32) *anlz.Analysis
+	// Previews stores waveform previews CDJs upload for tracks without
+	// rekordbox analysis (optional).
+	Previews *previewcache.Cache
 
 	menus map[uint8][]Item
 	// Closed is set after a teardown request.
@@ -155,6 +159,12 @@ func (s *Session) Handle(m *Message) []*Message {
 			blob := anlz.Preview(pwav, pwv2, has2)
 			return []*Message{{TxID: m.TxID, Type: RespWavePreview, Args: []Arg{Num(ReqWavePreview), Num(0), Num(uint32(len(blob))), Blob(blob)}}}
 		}
+		if t, ok := lib.Track(m.NumArg(2)); ok && s.Previews != nil {
+			if p := s.Previews.Get(previewKey(t)); p != nil {
+				blob := append(append([]byte(nil), p...), 0, 0, 0, 0) // 904 bytes like rekordbox
+				return []*Message{{TxID: m.TxID, Type: RespWavePreview, Args: []Arg{Num(ReqWavePreview), Num(0), Num(uint32(len(blob))), Blob(blob)}}}
+			}
+		}
 		return []*Message{notFound(m, RespWavePreview, false)}
 	case ReqWaveDetail:
 		if sec, ok := s.analysis(m.NumArg(1)).Section("EXT", "PWV3"); ok {
@@ -175,12 +185,33 @@ func (s *Session) Handle(m *Message) []*Message {
 	case ReqCuePoints:
 		return []*Message{notFound(m, RespCuePoints, false)}
 	case ReqUploadPreview:
-		// The CDJ-3000 analyses unanalysed tracks itself and offers us the
-		// result every ~250 ms while playing. Acknowledge and ignore.
+		// [DMST, 0, track, 0, (blob), 900, preview]: a CDJ-3000 analysing a
+		// track we had no analysis for offers us its preview every ~250 ms
+		// while loading. Keep the latest; rekordbox analysis always wins.
+		s.storeUpload(m)
 		return []*Message{success(m, 0)}
 	}
 	s.Log.Warn("unsupported request; answering with an empty result", "msg", m.String())
 	return []*Message{success(m, 0)}
+}
+
+func previewKey(t *library.Track) previewcache.Key {
+	return previewcache.Key{TrackID: t.ID, Size: t.Size, ModTime: t.ModTime}
+}
+
+func (s *Session) storeUpload(m *Message) {
+	if s.Previews == nil || len(m.Args) < 7 || m.Args[6].Kind != KindBlob {
+		return
+	}
+	t, ok := s.Lib().Track(m.NumArg(2))
+	if !ok || s.analysis(t.ID) != nil {
+		return
+	}
+	if err := s.Previews.Put(previewKey(t), m.Args[6].Blob); err != nil {
+		s.Log.Debug("ignored player preview upload", "track", t.ID, "err", err)
+		return
+	}
+	s.Log.Debug("stored the player's waveform preview", "track", t.Title)
 }
 
 // analysis returns a track's analysis or nil (nil-safe accessors follow).

@@ -18,6 +18,7 @@ import (
 	"github.com/yniverz/slipmat/internal/anlz"
 	"github.com/yniverz/slipmat/internal/library"
 	"github.com/yniverz/slipmat/internal/logx"
+	"github.com/yniverz/slipmat/internal/previewcache"
 )
 
 // PortDiscovery is where players ask for the dbserver port. [DS]
@@ -38,6 +39,7 @@ type Server struct {
 	Device   uint8
 	Log      *slog.Logger
 	Analysis func(trackID uint32) *anlz.Analysis
+	Previews *previewcache.Cache
 
 	disc, db net.Listener
 	conns    chan struct{}
@@ -154,6 +156,7 @@ func (s *Server) session(_ context.Context, c net.Conn) {
 	log.Info("player connected to dbserver")
 	sess := NewSession(s.Lib, s.Device, log)
 	sess.Analysis = s.Analysis
+	sess.Previews = s.Previews
 	for {
 		c.SetDeadline(time.Now().Add(idleTimeout))
 		m, err := rd.ReadMessage()

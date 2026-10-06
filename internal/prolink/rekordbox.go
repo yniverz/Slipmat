@@ -89,3 +89,22 @@ func EncodeLinkActivate(name string, dev uint8, slot Slot) []byte {
 	}
 	return b
 }
+
+// EncodeLoadTrack builds the 0x19 "load track" command (88 bytes) telling a
+// player to load track id from player src's slot. This is rekordbox's
+// variant: byte 0x20 = 01 and byte 0x4b = 0x32. target is the player
+// number being told to load (sent zero-based at 0x40). [DS]
+func EncodeLoadTrack(name string, dev, src uint8, slot Slot, trackType uint8, id uint32, target uint8) []byte {
+	b := statusHeader(KindLoadTrack, 0x58, name, 0x01, dev, 0x0034)
+	b[0x24] = dev
+	b[0x28] = src
+	b[0x29] = byte(slot)
+	b[0x2a] = trackType
+	binary.BigEndian.PutUint32(b[0x2c:0x30], id)
+	b[0x33] = 0x32
+	if target > 0 {
+		b[0x40] = target - 1
+	}
+	b[0x4b] = 0x32
+	return b
+}

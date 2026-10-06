@@ -4,8 +4,8 @@ package anlz
 
 import (
 	"bytes"
-	"fmt"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"

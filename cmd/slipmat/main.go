@@ -25,6 +25,7 @@ import (
 	"github.com/yniverz/slipmat/internal/logx"
 	"github.com/yniverz/slipmat/internal/monitor"
 	"github.com/yniverz/slipmat/internal/netif"
+	"github.com/yniverz/slipmat/internal/previewcache"
 	"github.com/yniverz/slipmat/internal/prolink"
 )
 
@@ -38,6 +39,8 @@ Usage:
   slipmat decode     [flags] FILE   decode a tcpdump/Wireshark capture (.pcap/.pcapng)
   slipmat serve      [flags]        appear on the link as a rekordbox source
   slipmat library    [flags]        scan the music folder and show which tracks have rekordbox analysis
+  slipmat load       [flags]        (dev) tell a player to load a track from a running serve
+  slipmat query      [flags] WHAT…  (dev) send dbserver queries to a player
   slipmat version
 
 Common flags:
@@ -66,6 +69,10 @@ func main() {
 		err = cmdServe(args)
 	case "library":
 		err = cmdLibrary(args)
+	case "load":
+		err = cmdLoad(args)
+	case "query":
+		err = cmdQuery(args)
 	case "version", "-version", "--version":
 		fmt.Println("slipmat", version)
 	case "help", "-h", "--help":
@@ -336,7 +343,7 @@ func cmdLibrary(args []string) error {
 		if t.BPM100 > 0 {
 			bpm = fmt.Sprintf("%6.2f", float64(t.BPM100)/100)
 		}
-		fmt.Printf("%s %s %-5s %s%s\n", mark, bpm, t.Format, t.RelPath, extra)
+		fmt.Printf("%s %08x %s %-5s %s%s\n", mark, t.ID, bpm, t.Format, t.RelPath, extra)
 	}
 	fmt.Println("\nA = rekordbox analysis found (beat grid + waveforms)")
 	return nil
@@ -389,6 +396,9 @@ func cmdServe(args []string) error {
 	ix := indexAnalysis(lib, anlzDirs)
 
 	db := &dbserver.Server{Lib: func() *library.Library { return lib }, Device: uint8(*devNum), Log: logx.Component("db"), Analysis: ix.Load}
+	if d, err := os.UserCacheDir(); err == nil {
+		db.Previews = previewcache.New(filepath.Join(d, "slipmat", "cdj-previews"))
+	}
 	if err := db.Listen(ifc.Prefix.Addr()); err != nil {
 		return err
 	}

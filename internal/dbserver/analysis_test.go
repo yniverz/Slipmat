@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yniverz/slipmat/internal/anlz"
+	"github.com/yniverz/slipmat/internal/previewcache"
 )
 
 func sec(tag string, hdr int, fields []byte, body []byte) anlz.Section {
@@ -60,5 +61,38 @@ func TestAnalysisRepliesMatchRekordboxShapes(t *testing.T) {
 	up := &Message{TxID: 9, Type: ReqUploadPreview, Args: []Arg{Num(dmstData), Num(0), Num(tr.ID), Num(0), Blob(nil), Num(900), Blob(make([]byte, 900))}}
 	if got := one(up); !strings.HasPrefix(got, "success(4000)") {
 		t.Errorf("0x2005 upload: %s", got)
+	}
+}
+
+func TestPlayerPreviewUploadIsServedBack(t *testing.T) {
+	lib := testLib()
+	tr := lib.Tracks()[0]
+	s := newSession(lib)
+	s.Previews = previewcache.New(t.TempDir())
+	preview := make([]byte, previewcache.Size)
+	preview[0] = 0x13
+	upload := &Message{TxID: 1, Type: ReqUploadPreview, Args: []Arg{Num(dmstData), Num(0), Num(tr.ID), Num(0), Blob(nil), Num(900), Blob(preview)}}
+	// As the CDJ sends it: the empty blob after the 0 is omitted on the wire.
+	got, _, err := Parse(upload.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Handle(got)
+	out := s.Handle(&Message{TxID: 2, Type: ReqWavePreview, Args: []Arg{Num(dmstData), Num(0), Num(tr.ID), Num(0), Blob(nil)}})
+	if out[0].String() != "wave-preview-data(4402) txid=2 args=[0x2004 0x0 0x388 blob[904 bytes]]" || out[0].Args[3].Blob[0] != 0x13 {
+		t.Fatalf("cached preview not served: %v", out[0])
+	}
+	// rekordbox analysis wins: uploads for analysed tracks are not stored.
+	other := lib.Tracks()[1]
+	s.Analysis = func(id uint32) *anlz.Analysis {
+		if id == other.ID {
+			return &anlz.Analysis{}
+		}
+		return nil
+	}
+	upload.Args[2] = Num(other.ID)
+	s.Handle(upload)
+	if s.Previews.Get(previewKey(other)) != nil {
+		t.Fatal("stored a player preview for a track with rekordbox analysis")
 	}
 }
