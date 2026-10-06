@@ -322,12 +322,14 @@ func (rd *Reader) ReadMessage() (*Message, error) {
 	}
 	for i := 0; i < int(argc); i++ {
 		tag := tags[i]
-		// An empty blob is omitted when the previous number (its length) is 0.
+		// A blob whose preceding number (its length) is 0 is omitted from the
+		// wire. This must be decided without looking ahead: on a live
+		// connection the next byte only arrives after we have replied, so
+		// peeking would deadlock (it stalled track loads on a CDJ-3000 until
+		// the player sent something else). [DS][hardware]
 		if tag == TagBlob && i > 0 && m.Args[i-1].Kind == KindNumber && m.Args[i-1].Num == 0 {
-			if next, err := rd.r.Peek(1); err != nil || next[0] != fieldBlob {
-				m.Args = append(m.Args, Blob(nil))
-				continue
-			}
+			m.Args = append(m.Args, Blob(nil))
+			continue
 		}
 		f, err := rd.readField()
 		if err != nil {

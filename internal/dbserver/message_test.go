@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 )
 
 func TestRoundTrip(t *testing.T) {
@@ -97,4 +98,35 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("bad consumption %d of %d", n, len(b))
 		}
 	})
+}
+
+// TestNoLookaheadAfterOmittedBlob reproduces a hang seen on a CDJ-3000: a
+// request ending in an omitted blob (wave preview: [DMST, 0, track, 0,
+// blob]) must be returned as soon as its bytes have arrived, without
+// waiting for further data that only comes after our reply.
+func TestNoLookaheadAfterOmittedBlob(t *testing.T) {
+	m := &Message{TxID: 6581, Type: ReqWavePreview, Args: []Arg{Num(0x01080401), Num(0), Num(0x52024286), Num(0), Blob(nil)}}
+	enc := m.Encode()
+	if len(enc) != 45 { // as the CDJ-3000 sends it [RB7]
+		t.Fatalf("encoded %d bytes", len(enc))
+	}
+	pr, pw := io.Pipe()
+	go pw.Write(enc) // and then nothing: the player waits for our reply
+	done := make(chan error, 1)
+	go func() {
+		got, err := NewReader(pr).ReadMessage()
+		if err == nil && got.String() != m.String() {
+			err = io.ErrUnexpectedEOF
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReadMessage blocked waiting for data after an omitted blob")
+	}
+	pw.Close()
 }

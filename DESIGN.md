@@ -242,6 +242,11 @@ track, `anlz/TestAgainstRekordbox7`):
 
 Slipmat on hardware:
 
+- A blob argument after a number 0 is omitted from the wire. Deciding that
+  by peeking at the next byte deadlocked live connections (the player sends
+  nothing more until it has our reply), so track loads hung until other
+  traffic arrived. The decoder now never looks ahead.
+
 - Sending the post-hello 0x16 after a player had already linked stalled
   browsing for ~30 s. We now only send 0x16 when quitting.
 
