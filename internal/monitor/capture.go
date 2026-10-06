@@ -32,6 +32,9 @@ type CaptureDecoder struct {
 	Log *slog.Logger
 	// Filter limits output to packets involving this host (optional).
 	Filter netip.Addr
+	// KeepDuplicates disables pktap duplicate suppression (needed to see
+	// packets that a device deliberately sends twice).
+	KeepDuplicates bool
 
 	dbPorts map[uint16]bool        // dbserver ports announced via 12523
 	rpcPort map[uint16]string      // extra RPC ports (mount) learned from portmap
@@ -65,6 +68,7 @@ func (d *CaptureDecoder) Decode(r io.Reader) error {
 	d.rpcPort = map[uint16]string{}
 	d.calls = map[uint32]rpcCallInfo{}
 	dec := pcap.NewDecoder()
+	dec.Dedupe = !d.KeepDuplicates
 	n := 0
 	for {
 		f, err := rd.Next()
@@ -233,7 +237,7 @@ func (d *CaptureDecoder) rpc(log *slog.Logger, p *pcap.Packet) {
 			extra = " for " + progName(c.getport)
 		}
 		d.calls[xid] = c
-		log.Info(fmt.Sprintf("rpc call %s v%d %s%s", progName(c.prog), c.vers, procName(c.prog, c.proc), extra), "route", route, "xid", fmt.Sprintf("%08x", xid), "len", len(b))
+		d.rpcLog(log, fmt.Sprintf("rpc call %s v%d %s%s", progName(c.prog), c.vers, procName(c.prog, c.proc), extra), route, xid, b)
 	case 1: // REPLY
 		c, ok := d.calls[xid]
 		label := "rpc reply"
@@ -249,8 +253,16 @@ func (d *CaptureDecoder) rpc(log *slog.Logger, p *pcap.Packet) {
 				}
 			}
 		}
-		log.Info(label, "route", route, "xid", fmt.Sprintf("%08x", xid), "len", len(b))
+		d.rpcLog(log, label, route, xid, b)
 	}
+}
+
+func (d *CaptureDecoder) rpcLog(log *slog.Logger, msg, route string, xid uint32, b []byte) {
+	if logx.TraceEnabled() {
+		log.Info(msg, "route", route, "xid", fmt.Sprintf("%08x", xid), "len", len(b), "hex", logx.Dump(b))
+		return
+	}
+	log.Info(msg, "route", route, "xid", fmt.Sprintf("%08x", xid), "len", len(b))
 }
 
 // rpcArgs returns the call arguments after credentials and verifier.

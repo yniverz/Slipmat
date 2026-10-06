@@ -46,7 +46,12 @@ func (f *fakeConn) take() []sent {
 
 var cdjIP = netip.MustParseAddr("192.168.1.50")
 
-func newTestDevice(t *testing.T) (*Device, *fakeConn, *fakeConn) {
+type bcastLog struct {
+	mu  sync.Mutex
+	out []sent
+}
+
+func newTestDevice(t *testing.T) (*Device, *bcastLog, *fakeConn) {
 	t.Helper()
 	logx.Setup(io.Discard, 0)
 	d, err := New(Config{
@@ -62,9 +67,17 @@ func newTestDevice(t *testing.T) (*Device, *fakeConn, *fakeConn) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ann, st := &fakeConn{port: prolink.PortAnnounce}, &fakeConn{port: prolink.PortStatus}
-	d.announce, d.status, d.beat = ann, st, &fakeConn{port: prolink.PortBeat}
-	return d, ann, st
+	bl := &bcastLog{}
+	d.bcast = func(port int, pkt []byte) error {
+		bl.mu.Lock()
+		defer bl.mu.Unlock()
+		bl.out = append(bl.out, sent{netip.AddrPortFrom(d.cfg.Interface.Broadcast, uint16(port)), append([]byte(nil), pkt...)})
+		return nil
+	}
+	d.after = func(_ time.Duration, f func()) { f() }
+	st := &fakeConn{port: prolink.PortStatus}
+	d.status = st
+	return d, bl, st
 }
 
 // cdjPacket builds a port-50002 packet as a CDJ (device 2) would send it.
@@ -98,14 +111,24 @@ func TestHelloQueryAnsweredWith0x11(t *testing.T) {
 	d, _, st := newTestDevice(t)
 	d.handle(in(prolink.PortStatus, cdjPacket(prolink.KindRBHelloQuery, 0x2c, nil)))
 	out := st.take()
-	if len(out) != 1 {
-		t.Fatalf("sent %d packets", len(out))
+	if len(out) != 2 {
+		t.Fatalf("want 0x11 then 0x16, sent %d packets", len(out))
 	}
-	if out[0].to != netip.AddrPortFrom(cdjIP, prolink.PortStatus) {
-		t.Fatalf("reply must go to the CDJ's port 50002, went to %s", out[0].to)
+	for _, o := range out {
+		if o.to != netip.AddrPortFrom(cdjIP, prolink.PortStatus) {
+			t.Fatalf("reply must go to the CDJ's port 50002, went to %s", o.to)
+		}
 	}
 	if s := decodeOne(t, out[0]); s.Kind != prolink.KindRBHello || s.HostName != "Slipmat" || s.Device != 17 {
 		t.Fatalf("bad hello: %v", s)
+	}
+	if s := decodeOne(t, out[1]); s.Kind != prolink.KindRBStatus {
+		t.Fatalf("hello must be followed by 0x16, got %v", s)
+	}
+	// A repeated query is answered, but the 0x16 is sent only once.
+	d.handle(in(prolink.PortStatus, cdjPacket(prolink.KindRBHelloQuery, 0x2c, nil)))
+	if out := st.take(); len(out) != 1 {
+		t.Fatalf("repeat query: sent %d packets", len(out))
 	}
 }
 
@@ -120,8 +143,8 @@ func TestMediaQuery(t *testing.T) {
 	}
 	d.handle(in(prolink.PortStatus, q(17)))
 	out := st.take()
-	if len(out) != 2 {
-		t.Fatalf("want media response sent twice, got %d", len(out))
+	if len(out) != 1 {
+		t.Fatalf("want one media response (rekordbox 7 sends one), got %d", len(out))
 	}
 	s := decodeOne(t, out[0])
 	if s.MediaResponse == nil || s.MediaResponse.Player != 17 || s.MediaResponse.Slot != prolink.SlotRekordbox || s.MediaResponse.Tracks != 3 {
@@ -129,55 +152,81 @@ func TestMediaQuery(t *testing.T) {
 	}
 }
 
-func TestLinkPingSequence(t *testing.T) {
+func TestLinkPingAnsweredWithActivation(t *testing.T) {
 	d, _, st := newTestDevice(t)
-	ping := cdjPacket(prolink.KindLinkPing, 0x30, nil)
-	if d.isLinked() {
-		t.Fatal("linked before any ping")
-	}
-	d.handle(in(prolink.PortStatus, ping))
-	if out := st.take(); len(out) != 1 || decodeOne(t, out[0]).Kind != prolink.KindRBStatus {
-		t.Fatalf("first ping must be answered with 0x16, got %v", out)
-	}
-	if !d.isLinked() {
-		t.Fatal("not linked after first ping")
-	}
-	for i := 0; i < 3; i++ {
+	ping := cdjPacket(prolink.KindLinkPing, 0x28, map[int]byte{0x24: 2, 0x25: 4, 0x27: 0xc0})
+	for i := 0; i < 2; i++ {
 		d.handle(in(prolink.PortStatus, ping))
 		out := st.take()
 		if len(out) != 1 || decodeOne(t, out[0]).Kind != prolink.KindLinkActivate {
-			t.Fatalf("ping %d must be answered with 0x47, got %v", i+2, out)
+			t.Fatalf("ping %d must be answered with 0x47, got %v", i+1, out)
 		}
 	}
 }
 
+func TestExportsFollowAvailability(t *testing.T) {
+	d, _, _ := newTestDevice(t)
+	if len(d.Exports()) != 0 {
+		t.Fatal("exports must be empty before we have claimed")
+	}
+	d.available.Store(true)
+	e := d.Exports()
+	if len(e) != 1 || e[0].Dir != "/" || len(e[0].Groups) != 1 || e[0].Groups[0] != "192.168.1.103/255.255.255.0" {
+		t.Fatalf("exports %+v", e)
+	}
+}
+
+func TestQuitSequence(t *testing.T) {
+	d, bl, st := newTestDevice(t)
+	d.available.Store(true)
+	d.handle(in(prolink.PortStatus, cdjPacket(prolink.KindRBHelloQuery, 0x2c, nil)))
+	st.take()
+	d.quit(make(chan inbound))
+	if d.available.Load() {
+		t.Fatal("still available after quit")
+	}
+	out := st.take()
+	if len(out) != 1 || decodeOne(t, out[0]).Kind != prolink.KindRBStatus {
+		t.Fatalf("quit must send 0x16 to each player, got %v", out)
+	}
+	last := bl.out[len(bl.out)-1]
+	a, err := prolink.DecodeAnnounce(last.pkt)
+	if err != nil || a.Kind != prolink.KindConflict || a.DeviceNumber != 17 || a.IP != d.id.IP {
+		t.Fatalf("quit must end with a leave broadcast, got %v %v", a, err)
+	}
+}
+
 func TestMalformedPacketsIgnored(t *testing.T) {
-	d, ann, st := newTestDevice(t)
+	d, bl, st := newTestDevice(t)
 	for _, b := range [][]byte{nil, {1, 2, 3}, []byte("Qspt1WmJOL"), append(append([]byte{}, prolink.Magic[:]...), 0x05, 0, 0)} {
 		d.handle(in(prolink.PortStatus, b))
 		d.handle(in(prolink.PortAnnounce, b))
 	}
-	if len(st.take())+len(ann.take()) != 0 {
+	if len(st.take())+len(bl.out) != 0 {
 		t.Fatal("replied to malformed input")
 	}
 }
 
 func TestClaimSequence(t *testing.T) {
-	d, ann, _ := newTestDevice(t)
-	if err := d.claim(t.Context()); err != nil {
-		t.Fatal(err)
+	d, bl, _ := newTestDevice(t)
+	start := time.Now()
+	d.claim(t.Context())
+	if want := 3 + claimRounds*len(rekordboxSlots); len(bl.out) != want {
+		t.Fatalf("sent %d claim packets, want %d", len(bl.out), want)
 	}
-	out := ann.take()
-	if want := 3*2 + 6*len(rekordboxSlots)*2; len(out) != want {
-		t.Fatalf("sent %d claim packets, want %d", len(out), want)
+	if el := time.Since(start); el < 3*time.Second {
+		t.Fatalf("claims went out too fast (%v); rekordbox spaces them 100 ms apart", el)
 	}
-	for _, s := range out {
+	for i, s := range bl.out {
 		if s.to != netip.MustParseAddrPort("192.168.1.255:50000") {
 			t.Fatalf("claim sent to %s", s.to)
 		}
 		a, err := prolink.DecodeAnnounce(s.pkt)
-		if err != nil || a.DeviceType != prolink.DeviceRekordbox {
+		if err != nil || a.Version != prolink.RekordboxVersion {
 			t.Fatalf("bad claim %v %v", a, err)
+		}
+		if i >= 3 && a.DeviceNumber != rekordboxSlots[(i-3)%len(rekordboxSlots)] {
+			t.Fatalf("claim %d for device %d", i, a.DeviceNumber)
 		}
 	}
 }

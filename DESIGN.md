@@ -43,9 +43,10 @@ internal/prolink       PURE codec for UDP packets (50000/50001/50002): decode, e
 internal/device        virtual-rekordbox state machine: claim → keep-alive → link handshake
 internal/monitor       live listener: decodes and logs all traffic, keeps a peer table
 internal/pcap          pcap/pcapng reader (Ethernet, NULL, RAW, SLL, macOS PKTAP) → UDP/TCP flows
+internal/rpc           ONC RPC + XDR codec, portmapper (UDP 50111), MOUNT v1 (later NFS v2)
 --- later milestones ---
 internal/dbserver      dbserver message codec (pure) + TCP server (menus/metadata/analysis)
-internal/nfs           ONC RPC + XDR codec, portmapper, MOUNT, NFSv2 (read-only, sandboxed)
+internal/rpc (nfs)     NFS v2 on top of the rpc package (read-only, sandboxed)
 internal/library       track model + Library interface; folder scanner; rekordbox-USB importer
 internal/anlz          ANLZ (.DAT/.EXT/.2EX) reader (later: writer) → beat grid, waveforms, cues
 internal/pdb           export.pdb reader (to reuse an existing rekordbox USB export)
@@ -90,13 +91,10 @@ WAV=0x0b, AIFF=0x0c). **Unverified; check this against a capture.**
 
 ## 4. Device identity
 
-- Device type 3 (rekordbox), device number 0x11 (17), as Deep Symmetry observed.
-  The name defaults to `Slipmat` and the 0x11 host name defaults to the
-  computer name (both configurable).
-- Claim sequence and keep-alive cadence follow Vynull for now: 0x00 ×3 pairs,
-  0x02 bursts cycling through {17, 18, 41–44}, 0x02 keep-alive plus 0x06 every
-  third tick. **Replace this with the cadence seen in our rekordbox 7
-  capture.**
+- Device type 04 (rekordbox) in keep-alive byte 0x34, device number 17.
+  The name and the 0x11 host name default to `Slipmat` (configurable).
+- Claim sequence, cadence and handshake follow the rekordbox 7 capture
+  exactly (see Findings).
 - One rekordbox-type source per link: if a peer of type 3 is seen, Slipmat
   warns loudly and refuses to serve unless `--force`.
 
@@ -170,21 +168,40 @@ interface, written to the git-ignored `captures/`). See TESTING.md.
 - NFS: export path naming, file-handle format expectations, READ size and
   retransmit behaviour; macOS UDP buffer sizes.
 
-### Findings so far (from real CDJ-2000NXS bytes, [DSC])
+### Findings so far
 
-- Final-stage claim packets are 0x26 bytes, not 0x2a as the docs say.
-  Keep-alive byte 0x25 is 0x01 or 0x02 depending on the player, so it
-  isn't a type field.
-- A media response from a real player uses subtype 0x00 and reports
-  `playlists=35` at 0xae. That explains the constant 35 in Vynull.
-  Vynull's rekordbox version uses subtype 0x01. Which one does rekordbox use?
+From the rekordbox 7 ↔ 2× CDJ-3000 (fw 3.22) capture [RB7], 2026-10-06:
+
+- **Device type is keep-alive byte 0x34** (01 CDJ, 02 mixer, 04 rekordbox).
+  Byte 0x21 is `03` for both the CDJ-3000 and rekordbox 7 (`02` on NXS2).
+- **Startup:** claim-1 ×3, then claim-2 ×6 rounds over devices
+  {17, 18, 41–44}, one packet every 100 ms. No claim-3, no duplicate
+  packets. After that: keep-alive every 2 s and a 0x29 status broadcast
+  every ~100 ms. All broadcasts go out from fresh ephemeral source ports.
+- **Handshake:** the first keep-alive triggers 0x10 from every CDJ, and
+  rekordbox answers with 0x11 (host name). The CDJs then call portmap
+  GETPORT(mount) on UDP 50111 and MOUNT EXPORT. **An empty export list keeps
+  the source unavailable.** rekordbox sends an unprompted 0x16 to each CDJ,
+  and the CDJs re-read the export list (`/` for `<ip>/<netmask>`), then
+  GETPORT(nfs)=2049 and MNT `/`, which returns an all-zero 32-byte handle.
+  Then comes the 0x05 media query (target 17, slot 4), answered with 0x06,
+  and **one** 0x46 link ping, answered with 0x47. There are no periodic link
+  pings.
+- **Quit:** 0x16 to each CDJ. They re-read the (now empty) export list and
+  UMNT. Then a 41-byte kind-0x08 broadcast carrying rekordbox's own number
+  and IP (a "leaving" packet), and the keep-alives stop.
+- **Browsing** uses TCP 12523 → dbserver on an ephemeral port. **NFS** reads
+  happen only when a track is loaded.
+- Every rekordbox packet above and the portmap/mount replies are reproduced
+  byte for byte by our encoders (`encode_test.go`, `rpc_test.go`).
+
+From the CDJ-2000NXS captures [DSC]:
+
+- Final-stage claims are 0x26 bytes. A real player's media response uses
+  subtype 0x00 and reports `playlists=35`.
 - The media query carries the target at 0x2b and the slot at 0x2f (Vynull
-  reads the target from 0x27, which is the last byte of the IP address).
-- Players send 50002 packets from ephemeral source ports, so replies must go
-  to port 50002, not to the source port.
-- Before a player sends a media query for another player's slot, it first
-  runs portmap GETPORT (mount, nfs) and MOUNT. Expect the same order against
-  us in milestone 3.
+  reads the target from 0x27).
+- Players send 50002 packets from ephemeral ports. Replies go to port 50002.
 
 ## 9. Licensing
 

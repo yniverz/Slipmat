@@ -40,9 +40,15 @@ func goldenFiles(t testing.TB) []string {
 	return files
 }
 
+// portOf finds the destination port in a fixture name such as
+// "50002-06-192.hex" or "rb-50002-06-192.hex".
 func portOf(path string) uint16 {
-	p, _ := strconv.Atoi(strings.SplitN(filepath.Base(path), "-", 2)[0])
-	return uint16(p)
+	for _, part := range strings.Split(filepath.Base(path), "-") {
+		if p, err := strconv.Atoi(part); err == nil && p >= 50000 && p <= 50004 {
+			return uint16(p)
+		}
+	}
+	return 0
 }
 
 func TestDescribeAllGolden(t *testing.T) {

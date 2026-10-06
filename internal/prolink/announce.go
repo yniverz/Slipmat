@@ -55,8 +55,9 @@ func AnnounceKindName(k uint8) string {
 type Announce struct {
 	Kind       uint8
 	Name       string
-	DeviceType DeviceType // byte 0x21
+	Version    uint8      // byte 0x21: 02 on CDJ-2000NXS [DSC], 03 on CDJ-3000 and rekordbox 7 [RB7]
 	Length     uint16     // declared packet length (bytes 0x22-0x23)
+	DeviceType DeviceType // keep-alive byte 0x34 (zero for other kinds)
 
 	DeviceNumber uint8      // claim-2 (0x2e), claim-3/keep-alive/conflict/finished (0x24)
 	Counter      uint8      // N: claim-1 (0x24), claim-2 (0x2f), claim-3 (0x25)
@@ -79,10 +80,10 @@ func DecodeAnnounce(b []byte) (*Announce, error) {
 		return nil, err
 	}
 	a := &Announce{
-		Kind:       k,
-		Name:       cString(b[0x0c:0x20]),
-		DeviceType: DeviceType(b[0x21]),
-		Length:     binary.BigEndian.Uint16(b[0x22:0x24]),
+		Kind:    k,
+		Name:    cString(b[0x0c:0x20]),
+		Version: b[0x21],
+		Length:  binary.BigEndian.Uint16(b[0x22:0x24]),
 	}
 	switch k {
 	case KindHello:
@@ -113,6 +114,9 @@ func DecodeAnnounce(b []byte) (*Announce, error) {
 		a.DeviceNumber, a.Class = b[0x24], b[0x25]
 		a.MAC, a.IP, a.Peers = mac(b[0x26:0x2c]), ip4(b[0x2c:0x30]), b[0x30]
 		a.Tail = append([]byte(nil), b[0x31:]...)
+		if len(b) > 0x34 {
+			a.DeviceType = DeviceType(b[0x34])
+		}
 	case KindConflict:
 		if err := need(b, 0x29); err != nil {
 			return nil, err
@@ -129,7 +133,7 @@ func DecodeAnnounce(b []byte) (*Announce, error) {
 
 // String renders a one-line summary for logs.
 func (a *Announce) String() string {
-	s := fmt.Sprintf("%s name=%q type=%s len=%d", AnnounceKindName(a.Kind), a.Name, a.DeviceType, a.Length)
+	s := fmt.Sprintf("%s name=%q ver=%#02x len=%d", AnnounceKindName(a.Kind), a.Name, a.Version, a.Length)
 	switch a.Kind {
 	case KindHello:
 		s += fmt.Sprintf(" class=%#02x", a.Class)
@@ -140,9 +144,12 @@ func (a *Announce) String() string {
 	case KindClaim3:
 		s += fmt.Sprintf(" dev=%d n=%d", a.DeviceNumber, a.Counter)
 	case KindKeepAlive:
-		s += fmt.Sprintf(" dev=%d class=%#02x ip=%s mac=%s peers=%d tail=% x", a.DeviceNumber, a.Class, a.IP, MACString(a.MAC), a.Peers, a.Tail)
+		s += fmt.Sprintf(" type=%s dev=%d class=%#02x ip=%s mac=%s peers=%d tail=% x", a.DeviceType, a.DeviceNumber, a.Class, a.IP, MACString(a.MAC), a.Peers, a.Tail)
 	case KindConflict:
 		s += fmt.Sprintf(" dev=%d ip=%s", a.DeviceNumber, a.IP)
+		if a.Name == "rekordbox" || a.Version == RekordboxVersion {
+			s += " (a broadcast of a device's own number means it is leaving)"
+		}
 	case KindAssign, KindAssignFinished:
 		s += fmt.Sprintf(" dev=%d", a.DeviceNumber)
 	}
@@ -150,12 +157,12 @@ func (a *Announce) String() string {
 }
 
 // announceHeader builds the common port-50000 header for a packet of size n.
-func announceHeader(kind uint8, n int, name string, typ DeviceType) []byte {
+func announceHeader(kind uint8, n int, name string, version uint8) []byte {
 	b := make([]byte, n)
 	putHeader(b, kind)
 	putCString(b[0x0c:0x20], name)
 	b[0x20] = 0x01
-	b[0x21] = byte(typ)
+	b[0x21] = version
 	binary.BigEndian.PutUint16(b[0x22:0x24], uint16(n))
 	return b
 }
@@ -169,22 +176,25 @@ type Identity struct {
 }
 
 // RekordboxClass is the device class byte rekordbox uses in claim packets
-// (claim-1 0x25, claim-2 0x30). [VN]
+// (claim-1 0x25, claim-2 0x30). [VN][RB7]
 const RekordboxClass = 0x04
 
-// EncodeRekordboxClaim1 builds a first-stage claim as rekordbox sends it. [VN]
+// RekordboxVersion is byte 0x21 of rekordbox 7's port-50000 packets. [RB7]
+const RekordboxVersion = 0x03
+
+// EncodeRekordboxClaim1 builds a first-stage claim as rekordbox sends it. [VN][RB7]
 func EncodeRekordboxClaim1(id Identity, counter uint8) []byte {
-	b := announceHeader(KindClaim1, 0x2c, id.Name, DeviceRekordbox)
+	b := announceHeader(KindClaim1, 0x2c, id.Name, RekordboxVersion)
 	b[0x24] = counter
 	b[0x25] = RekordboxClass
 	copy(b[0x26:0x2c], id.MAC[:])
 	return b
 }
 
-// EncodeRekordboxClaim2 builds a second-stage claim for device number dev. [VN]
+// EncodeRekordboxClaim2 builds a second-stage claim for device number dev. [VN][RB7]
 // Counter is N; rekordbox sends auto-assign (0x01).
 func EncodeRekordboxClaim2(id Identity, dev, counter uint8) []byte {
-	b := announceHeader(KindClaim2, 0x32, id.Name, DeviceRekordbox)
+	b := announceHeader(KindClaim2, 0x32, id.Name, RekordboxVersion)
 	ip := id.IP.As4()
 	copy(b[0x24:0x28], ip[:])
 	copy(b[0x28:0x2e], id.MAC[:])
@@ -196,11 +206,11 @@ func EncodeRekordboxClaim2(id Identity, dev, counter uint8) []byte {
 }
 
 // EncodeRekordboxKeepAlive builds a rekordbox keep-alive (0x06, 54 bytes).
-// Bytes 0x25 = 01 and 0x31..0x35 = 01 00 00 04 08 are identical in [BL]
-// (captured from rekordbox) and [VN]. Peers is the number of devices seen,
+// Bytes 0x25 = 01 and 0x31..0x35 = 01 00 00 04 08 are identical in [BL],
+// [VN] and [RB7]. Peers is the number of devices seen,
 // including ourselves.
 func EncodeRekordboxKeepAlive(id Identity, peers uint8) []byte {
-	b := announceHeader(KindKeepAlive, 0x36, id.Name, DeviceRekordbox)
+	b := announceHeader(KindKeepAlive, 0x36, id.Name, RekordboxVersion)
 	b[0x24] = id.DeviceNumber
 	b[0x25] = 0x01
 	copy(b[0x26:0x2c], id.MAC[:])
@@ -208,5 +218,16 @@ func EncodeRekordboxKeepAlive(id Identity, peers uint8) []byte {
 	copy(b[0x2c:0x30], ip[:])
 	b[0x30] = peers
 	copy(b[0x31:0x36], []byte{0x01, 0x00, 0x00, 0x04, 0x08})
+	return b
+}
+
+// EncodeRekordboxLeave builds the 41-byte kind-0x08 packet rekordbox 7
+// broadcasts with its own number and IP when it quits. [RB7]
+// (The same layout is the "channel conflict" packet in [DS].)
+func EncodeRekordboxLeave(id Identity) []byte {
+	b := announceHeader(KindConflict, 0x29, id.Name, RekordboxVersion)
+	b[0x24] = id.DeviceNumber
+	ip := id.IP.As4()
+	copy(b[0x25:0x29], ip[:])
 	return b
 }

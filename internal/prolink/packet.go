@@ -8,7 +8,7 @@
 //   - [DSC] Deep Symmetry CDJ-2000NXS hardware captures (dysentery/doc/assets/captures)
 //   - [BL]  beat-link VirtualRekordbox packet templates
 //   - [VN]  Vynull (GPL-3.0), proto/ package — server-side findings adapted here
-//   - [RB7] our own rekordbox 7 <-> CDJ-3000 captures (TODO: pending)
+//   - [RB7] our own rekordbox 7 <-> 2x CDJ-3000 (fw 3.22) capture, 2026-10-06
 //
 // Anything marked only [VN] is a hypothesis until confirmed by [RB7].
 package prolink
@@ -42,14 +42,15 @@ var (
 	ErrBadMagic = errors.New("prolink: bad magic")
 )
 
-// DeviceType is the device class byte at 0x21 of port-50000 packets.
-// Observed: CDJ=0x02 [DSC], rekordbox=0x03 [BL][VN]; mixer=0x01 per [VN].
+// DeviceType is the device class in keep-alive byte 0x34: 01 for CDJs
+// [DS][DSC][RB7], 02 for mixers [DS], 04 for rekordbox [BL][RB7].
+// (Byte 0x21 is NOT a device type: CDJ-3000s and rekordbox 7 both send 03.)
 type DeviceType uint8
 
 const (
-	DeviceMixer     DeviceType = 0x01
-	DeviceCDJ       DeviceType = 0x02
-	DeviceRekordbox DeviceType = 0x03
+	DeviceCDJ       DeviceType = 0x01
+	DeviceMixer     DeviceType = 0x02
+	DeviceRekordbox DeviceType = 0x04
 )
 
 func (d DeviceType) String() string {

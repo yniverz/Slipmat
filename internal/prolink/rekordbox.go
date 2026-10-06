@@ -2,10 +2,10 @@
 
 package prolink
 
-// Encoders for the port-50002 packets a rekordbox source sends.
-// Byte layouts are adapted from Vynull's proto/status.go (GPL-3.0) [VN];
-// the 0x11 hello is cross-checked against beat-link's template [BL].
-// All of these await confirmation from a rekordbox 7 <-> CDJ-3000 capture.
+// Encoders for the port-50002 packets a rekordbox source sends. Layouts were
+// adapted from Vynull's proto/status.go (GPL-3.0) [VN] and beat-link [BL],
+// and each one is now verified byte-for-byte against rekordbox 7 [RB7]
+// (see encode_test.go).
 
 import "encoding/binary"
 
@@ -22,7 +22,7 @@ func statusHeader(kind uint8, n int, name string, subtype, dev uint8, remaining 
 }
 
 // EncodeRBHello builds the 0x11 announce (296 bytes) carrying the computer
-// name shown on the CDJ. [BL][VN]
+// name, sent in answer to a CDJ's 0x10 query. [BL][VN][RB7]
 func EncodeRBHello(name string, dev uint8, host string) []byte {
 	b := statusHeader(KindRBHello, 0x128, name, 0x01, dev, 0x0104)
 	b[0x24] = dev
@@ -31,13 +31,15 @@ func EncodeRBHello(name string, dev uint8, host string) []byte {
 	return b
 }
 
-// EncodeRBStatus builds the 0x16 short status (48 bytes). [VN]
+// EncodeRBStatus builds the 0x16 packet (48 bytes). rekordbox 7 sends it
+// unprompted to each CDJ when its export changes (startup, quit); the CDJs
+// then re-read the MOUNT export list. [RB7]
 func EncodeRBStatus(name string, dev uint8) []byte {
 	return statusHeader(KindRBStatus, 0x30, name, 0x01, dev, 0)
 }
 
 // EncodeRBMixerStatus builds the 0x29 status rekordbox broadcasts (56 bytes):
-// "always playing (F=c0), not master/synced". [DS][VN]
+// "always playing (F=c0), not master/synced", broadcast every ~100 ms. [DS][VN][RB7]
 func EncodeRBMixerStatus(name string, dev uint8) []byte {
 	b := statusHeader(KindMixerStatus, 0x38, name, 0x01, dev, 0x0038)
 	b[0x24] = dev
@@ -57,7 +59,7 @@ type MediaInfo struct {
 	Settings  bool // My Settings available
 }
 
-// EncodeMediaResponse builds the 0x06 media response (192 bytes). [DS][VN]
+// EncodeMediaResponse builds the 0x06 media response (192 bytes). [DS][VN][RB7]
 func EncodeMediaResponse(name string, dev uint8, slot Slot, m MediaInfo) []byte {
 	b := statusHeader(KindMediaResponse, 0xc0, name, 0x01, dev, 0x009c)
 	b[0x27] = dev
@@ -72,22 +74,18 @@ func EncodeMediaResponse(name string, dev uint8, slot Slot, m MediaInfo) []byte 
 	return b
 }
 
-// DevSetting is the 6-byte DEVSETTING block embedded in link packets. [VN]
-//
-//	[0] ? (01)  [1] overview 01 half / 02 full  [2] colour 01 blue / 03 RGB / 04 3-band
-//	[3] ? (01)  [4] key 01 classic / 02 alphanumeric  [5] waveform position 01 centre / 02 left
-type DevSetting [6]byte
-
-// DefaultDevSetting matches Vynull's defaults (full overview, RGB, alphanumeric, centre).
-var DefaultDevSetting = DevSetting{0x01, 0x02, 0x03, 0x01, 0x02, 0x01}
-
-// EncodeLinkActivate builds the 0x47 link activation (72 bytes). [VN]
-func EncodeLinkActivate(name string, dev uint8, slot Slot, ds DevSetting) []byte {
+// EncodeLinkActivate builds the 0x47 link activation (72 bytes) rekordbox
+// sends in answer to a CDJ's 0x46 link ping. Bytes 0x30-0x38 are 01 in
+// rekordbox 7 (Vynull reads 0x30-0x35 as a DEVSETTING block; unconfirmed).
+// [RB7]
+func EncodeLinkActivate(name string, dev uint8, slot Slot) []byte {
 	b := statusHeader(KindLinkActivate, 0x48, name, 0x01, dev, 0x0024)
 	b[0x24] = dev
 	b[0x25] = byte(slot)
 	copy(b[0x28:0x2c], []byte{0x12, 0x34, 0x56, 0x78})
 	b[0x2f] = 0x01
-	copy(b[0x30:0x36], ds[:])
+	for i := 0x30; i <= 0x38; i++ {
+		b[i] = 0x01
+	}
 	return b
 }

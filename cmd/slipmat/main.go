@@ -225,6 +225,7 @@ func cmdDecode(args []string) error {
 	fs.Func("vv", "trace with hex dumps", func(string) error { verbose += 2; return nil })
 	quiet := fs.Bool("changes", false, "only log status/beat packets when they change (like monitor)")
 	host := fs.String("host", "", "only show packets to/from this IP")
+	dups := fs.Bool("dups", false, "keep identical packets sent within 2 ms (disables pktap duplicate filtering)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -235,6 +236,7 @@ func cmdDecode(args []string) error {
 	d := &monitor.CaptureDecoder{Log: logx.Component("decode")}
 	d.Obs = monitor.NewObserver(logx.Component("link"))
 	d.Obs.Verbose = !*quiet
+	d.KeepDuplicates = *dups
 	if *host != "" {
 		a, err := netip.ParseAddr(*host)
 		if err != nil {
@@ -278,7 +280,7 @@ func cmdServe(args []string) error {
 		Name:         *name,
 		Host:         strings.TrimSpace(*host),
 		DeviceNumber: uint8(*devNum),
-		Media:        prolink.MediaInfo{Name: *host},
+		Media:        prolink.MediaInfo{Name: *host, Settings: true}, // Settings mirrors rekordbox 7 [RB7]
 		Force:        *force,
 	}, log)
 	if err != nil {
